@@ -19,6 +19,7 @@
   <a href="https://developer.nvidia.com/cuda-downloads"><img src="https://img.shields.io/badge/GPU-CUDA%20推荐-76B900?style=flat-square&logo=nvidia" alt="CUDA"/></a>
   <a href="#-加入微信群"><img src="https://img.shields.io/badge/WeChat-加入群聊-07C160?style=flat-square&logo=wechat&logoColor=white" alt="WeChat"/></a>
   <a href="https://github.com/BIT-DataLab/Edit-Banana/stargazers"><img src="https://img.shields.io/github/stars/BIT-DataLab/Edit-Banana?style=flat-square&logo=github" alt="GitHub stars"/></a>
+  <a href="https://atomgit.com/BIT-DataLab/Edit-Banana/stargazers"><img src="https://atomgit.com/BIT-DataLab/Edit-Banana/star/badge.svg" alt="AtomGit Star"/></a >
 </p>
 
 ---
