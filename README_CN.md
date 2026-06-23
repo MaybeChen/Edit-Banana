@@ -251,6 +251,7 @@ pip install -r requirements.txt
 
 **常见问题**:
 - "no kernel image is available..."：GPU 架构不匹配。尝试升级 PyTorch，或者设置 `sam3.device: "cpu"`。
+- "No module named 'triton'"：SAM3 的 PyTorch 注意力栈可能需要 Triton。Linux 下在同一环境执行 `pip install triton`；Windows 原生环境可尝试 `pip install triton-windows`，但需要匹配 PyTorch/CUDA/Python 版本，不满足时建议改用 WSL/Linux 运行 SAM3。
 - "Model file not found at ...rmbg/..."：RMBG 模块是可选的，如果你需要，请通过脚本下载启用。
 - "PaddleOCR inference failed..."：请使用 `paddlepaddle==3.2.2` 版本或回退到使用 Tesseract 识别。
 </details>
