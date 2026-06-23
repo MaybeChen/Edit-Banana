@@ -32,14 +32,24 @@ class PaddleOCRAdapter:
         self,
         use_angle_cls: bool = True,
         lang: str = "ch",
+        model_dir: str = None,
         det_model_dir: str = None,
         rec_model_dir: str = None,
         cls_model_dir: str = None,
+        allow_download: bool = True,
     ):
         if PaddleOCR is None:
             raise ImportError(
                 "Install PaddleOCR: pip install paddleocr paddlepaddle (or paddlepaddle-gpu)"
             )
+        det_model_dir = det_model_dir or self._find_local_model_dir(model_dir, "det")
+        rec_model_dir = rec_model_dir or self._find_local_model_dir(model_dir, "rec")
+        cls_model_dir = cls_model_dir or self._find_local_model_dir(model_dir, "cls")
+        if not allow_download:
+            self._require_local_model_dir(det_model_dir, "det")
+            self._require_local_model_dir(rec_model_dir, "rec")
+            if use_angle_cls:
+                self._require_local_model_dir(cls_model_dir, "cls")
         kwargs = {
             "use_angle_cls": use_angle_cls,
             "lang": lang,
@@ -63,6 +73,38 @@ class PaddleOCRAdapter:
                     "See README Optional PaddleOCR section."
                 ) from e
             raise
+
+    @staticmethod
+    def _find_local_model_dir(model_dir: str, kind: str) -> str:
+        """Find a PaddleOCR 2.x inference model directory under a local model root."""
+        if not model_dir:
+            return None
+        root = Path(model_dir)
+        if not root.exists():
+            return None
+
+        direct = root / kind
+        if direct.exists():
+            return str(direct)
+
+        matches = sorted(root.glob(f"*_{kind}_infer"))
+        return str(matches[0]) if matches else None
+
+    @staticmethod
+    def _require_local_model_dir(model_dir: str, kind: str) -> None:
+        """Fail fast instead of letting PaddleOCR download when local models are required."""
+        if not model_dir:
+            raise FileNotFoundError(
+                f"PaddleOCR {kind} model directory is not configured; set ocr.paddleocr.{kind}_model_dir "
+                f"or put a *_{kind}_infer directory under ocr.paddleocr.model_dir."
+            )
+        path = Path(model_dir)
+        required = ["inference.pdmodel", "inference.pdiparams"]
+        missing = [name for name in required if not (path / name).exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"PaddleOCR {kind} model directory is incomplete: {path}. Missing: {', '.join(missing)}"
+            )
 
     def _parse_result(self, result: Any) -> List[TextBlock]:
         """Parse PaddleOCR 2.x or 3.x result into list of TextBlock."""
