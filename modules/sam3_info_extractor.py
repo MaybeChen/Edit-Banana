@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 import torch
 import yaml
+import warnings
 from PIL import Image
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -21,6 +22,10 @@ from prompts.arrow import ARROW_PROMPT
 from prompts.background import BACKGROUND_PROMPT
 from prompts.shape import SHAPE_PROMPT
 from prompts.image import IMAGE_PROMPT
+
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API.*", category=UserWarning)
+warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available. Disabling", category=UserWarning)
+warnings.filterwarnings("ignore", message="Importing from timm.models.layers is deprecated.*", category=FutureWarning)
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

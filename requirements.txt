@@ -1,6 +1,6 @@
 # Pipeline & optional web backend
-# SAM3 currently imports pkg_resources, which was removed from setuptools 82.
-setuptools<82
+# SAM3 currently imports pkg_resources; setuptools 81+ warns and 82+ removes it.
+setuptools<81
 einops
 pycocotools
 psutil

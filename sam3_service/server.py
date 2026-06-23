@@ -3,6 +3,7 @@ import asyncio
 import base64
 import io
 import os
+import warnings
 from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Dict, List, Literal, Optional
@@ -15,6 +16,10 @@ import yaml
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from PIL import Image
+
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API.*", category=UserWarning)
+warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available. Disabling", category=UserWarning)
+warnings.filterwarnings("ignore", message="Importing from timm.models.layers is deprecated.*", category=FutureWarning)
 
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
