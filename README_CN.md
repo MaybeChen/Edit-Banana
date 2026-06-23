@@ -226,7 +226,7 @@ pip install -r requirements.txt
   ```bash
   pip install pix2text onnxruntime-gpu
   ```
-- 去除背景 (RMBG)：运行 `pip install onnxruntime modelscope` 然后执行 `python scripts/setup_rmbg.py`。
+- 去除背景 (RMBG)：运行 `pip install onnxruntime modelscope` 然后执行 `python scripts/setup_rmbg.py`。注意：PaddleOCR 2.x/PaddlePaddle 2.x 在 Windows 上要求较旧 protobuf，而新版 onnxruntime 可能要求 protobuf>=4.25.8；如遇冲突，建议把 RMBG/ONNX Runtime 放到单独环境，或先不启用 RMBG。
 </details>
 
 ### 阶段 3：配置与故障排查
