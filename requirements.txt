@@ -2,6 +2,7 @@
 # SAM3 currently imports pkg_resources, which was removed from setuptools 82.
 setuptools<82
 einops
+pycocotools
 pyyaml
 opencv-python-headless
 numpy
