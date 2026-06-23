@@ -13,6 +13,7 @@ from PIL import Image
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 import threading
@@ -218,7 +219,11 @@ class SAM3Model(ModelWrapper):
         super().__init__()
         self.checkpoint_path = checkpoint_path
         self.bpe_path = bpe_path
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        requested_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        if str(requested_device).startswith("cuda") and not torch.cuda.is_available():
+            print("[SAM3Model] Warning: CUDA requested but PyTorch has no CUDA support; falling back to CPU")
+            requested_device = "cpu"
+        self.device = requested_device
         self._processor = None
         
         # 图像状态缓存
@@ -236,16 +241,73 @@ class SAM3Model(ModelWrapper):
         from sam3.model_builder import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
         
-        self._model = build_sam3_image_model(
-            bpe_path=self.bpe_path,
-            checkpoint_path=self.checkpoint_path,
-            load_from_HF=False,
-            device=self.device
-        )
-        self._processor = Sam3Processor(self._model)
+        with self._redirect_cuda_allocations_when_cpu_only():
+            self._model = build_sam3_image_model(
+                bpe_path=self.bpe_path,
+                checkpoint_path=self.checkpoint_path,
+                load_from_HF=False,
+                device=self.device
+            )
+            self._install_cpu_dtype_compatibility_hooks()
+            self._processor = Sam3Processor(self._model, device=self.device)
         self._is_loaded = True
         
         print("[SAM3Model] 模型加载完成！")
+
+    def _install_cpu_dtype_compatibility_hooks(self):
+        """Keep CPU linear inputs aligned with layer weights when SAM3 emits bf16 tensors."""
+        if self.device != "cpu" or self._model is None:
+            return
+
+        def match_linear_input_dtype(module, inputs):
+            if not inputs:
+                return inputs
+            first_arg = inputs[0]
+            if (
+                isinstance(first_arg, torch.Tensor)
+                and first_arg.is_floating_point()
+                and first_arg.dtype != module.weight.dtype
+            ):
+                return (first_arg.to(dtype=module.weight.dtype),) + inputs[1:]
+            return inputs
+
+        self._cpu_dtype_hook_handles = []
+        for module in self._model.modules():
+            if isinstance(module, torch.nn.Linear):
+                self._cpu_dtype_hook_handles.append(
+                    module.register_forward_pre_hook(match_linear_input_dtype)
+                )
+
+    @contextmanager
+    def _redirect_cuda_allocations_when_cpu_only(self):
+        """Redirect SAM3 hard-coded CUDA tensor allocations to CPU for CPU-only PyTorch."""
+        should_redirect = self.device == "cpu" and not torch.cuda.is_available()
+        if not should_redirect:
+            yield
+            return
+
+        factory_names = ("arange", "empty", "full", "linspace", "ones", "rand", "randn", "tensor", "zeros")
+        originals = {name: getattr(torch, name) for name in factory_names}
+        original_pin_memory = torch.Tensor.pin_memory
+
+        def make_cpu_fallback(original_func):
+            def cpu_fallback(*args, **kwargs):
+                device = kwargs.get("device")
+                if device is not None and str(device).startswith("cuda"):
+                    kwargs["device"] = "cpu"
+                return original_func(*args, **kwargs)
+
+            return cpu_fallback
+
+        for name, original in originals.items():
+            setattr(torch, name, make_cpu_fallback(original))
+        torch.Tensor.pin_memory = lambda tensor, *args, **kwargs: tensor
+        try:
+            yield
+        finally:
+            for name, original in originals.items():
+                setattr(torch, name, original)
+            torch.Tensor.pin_memory = original_pin_memory
     
     def predict(self, image_path: str, prompts: List[str], 
                 score_threshold: float = 0.5,
@@ -265,12 +327,14 @@ class SAM3Model(ModelWrapper):
         if not self._is_loaded:
             self.load()
         
-        state, pil_image = self._get_image_state(image_path)
+        with self._redirect_cuda_allocations_when_cpu_only():
+            state, pil_image = self._get_image_state(image_path)
         
         results = []
         for prompt in prompts:
-            self._processor.reset_all_prompts(state)
-            result_state = self._processor.set_text_prompt(prompt=prompt, state=state)
+            with self._redirect_cuda_allocations_when_cpu_only():
+                self._processor.reset_all_prompts(state)
+                result_state = self._processor.set_text_prompt(prompt=prompt, state=state)
             
             masks = result_state.get("masks", [])
             boxes = result_state.get("boxes", [])
@@ -1140,4 +1204,3 @@ def extract_with_prompts(image_path: str,
         prompts,
         score_threshold=score_threshold
     )
-

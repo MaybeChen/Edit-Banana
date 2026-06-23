@@ -20,7 +20,7 @@ for ((i=0; i<N; i++)); do
   CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" python -m sam3_service.server \
     --config "$CONFIG" \
     --port "$PORT" \
-    --device "${DEVICE:-cuda}" \
+    --device "${DEVICE:-auto}" \
     --cache-size "${CACHE_SIZE:-2}" &
 done
 wait
