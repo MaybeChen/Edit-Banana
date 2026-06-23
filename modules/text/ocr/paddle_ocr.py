@@ -2,7 +2,7 @@
 PaddleOCR adapter (optional).
 
 Same interface as LocalOCR: analyze_image(image_path) -> OCRResult.
-Recommended: paddlepaddle==3.2.2 + paddleocr (3.3.0+ has CPU oneDNN bug).
+Recommended for PaddleOCR 2.x: paddleocr>=2.8.0,<3.0.0 + paddlepaddle>=2.6.1,<3.0.0.
 """
 
 from pathlib import Path
@@ -28,20 +28,37 @@ class PaddleOCRAdapter:
     Requires: paddleocr, paddlepaddle (or paddlepaddle-gpu).
     """
 
-    def __init__(self, use_angle_cls: bool = True, lang: str = "ch"):
+    def __init__(
+        self,
+        use_angle_cls: bool = True,
+        lang: str = "ch",
+        det_model_dir: str = None,
+        rec_model_dir: str = None,
+        cls_model_dir: str = None,
+    ):
         if PaddleOCR is None:
             raise ImportError(
                 "Install PaddleOCR: pip install paddleocr paddlepaddle (or paddlepaddle-gpu)"
             )
+        kwargs = {
+            "use_angle_cls": use_angle_cls,
+            "lang": lang,
+        }
+        if det_model_dir:
+            kwargs["det_model_dir"] = det_model_dir
+        if rec_model_dir:
+            kwargs["rec_model_dir"] = rec_model_dir
+        if cls_model_dir:
+            kwargs["cls_model_dir"] = cls_model_dir
         try:
-            self._engine = PaddleOCR(use_angle_cls=use_angle_cls, lang=lang)
+            self._engine = PaddleOCR(**kwargs)
         except AttributeError as e:
             if "set_optimization_level" in str(e):
                 raise RuntimeError(
                     "PaddleOCR incompatible with this PaddlePaddle (missing set_optimization_level).\n"
-                    "Install PaddlePaddle 3.x and PaddleOCR 3.x:\n"
+                    "Install compatible PaddleOCR 2.x and PaddlePaddle 2.x:\n"
                     "  pip uninstall paddleocr paddlepaddle paddlepaddle-gpu paddlex -y\n"
-                    "  pip install \"paddlepaddle>=3.0\" paddleocr   # CPU\n"
+                    "  pip install \"paddleocr>=2.8.0,<3.0.0\" \"paddlepaddle>=2.6.1,<3.0.0\"   # CPU\n"
                     "  # GPU: pip install paddlepaddle-gpu paddleocr\n"
                     "See README Optional PaddleOCR section."
                 ) from e
