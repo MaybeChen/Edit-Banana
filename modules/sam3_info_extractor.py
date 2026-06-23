@@ -288,6 +288,7 @@ class SAM3Model(ModelWrapper):
 
         factory_names = ("arange", "empty", "full", "linspace", "ones", "rand", "randn", "tensor", "zeros")
         originals = {name: getattr(torch, name) for name in factory_names}
+        original_pin_memory = torch.Tensor.pin_memory
 
         def make_cpu_fallback(original_func):
             def cpu_fallback(*args, **kwargs):
@@ -300,11 +301,13 @@ class SAM3Model(ModelWrapper):
 
         for name, original in originals.items():
             setattr(torch, name, make_cpu_fallback(original))
+        torch.Tensor.pin_memory = lambda tensor, *args, **kwargs: tensor
         try:
             yield
         finally:
             for name, original in originals.items():
                 setattr(torch, name, original)
+            torch.Tensor.pin_memory = original_pin_memory
     
     def predict(self, image_path: str, prompts: List[str], 
                 score_threshold: float = 0.5,
@@ -324,12 +327,14 @@ class SAM3Model(ModelWrapper):
         if not self._is_loaded:
             self.load()
         
-        state, pil_image = self._get_image_state(image_path)
+        with self._redirect_cuda_allocations_when_cpu_only():
+            state, pil_image = self._get_image_state(image_path)
         
         results = []
         for prompt in prompts:
-            self._processor.reset_all_prompts(state)
-            result_state = self._processor.set_text_prompt(prompt=prompt, state=state)
+            with self._redirect_cuda_allocations_when_cpu_only():
+                self._processor.reset_all_prompts(state)
+                result_state = self._processor.set_text_prompt(prompt=prompt, state=state)
             
             masks = result_state.get("masks", [])
             boxes = result_state.get("boxes", [])

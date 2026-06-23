@@ -40,6 +40,7 @@ def _redirect_cuda_allocations_when_cpu_only(device: str):
 
     factory_names = ("arange", "empty", "full", "linspace", "ones", "rand", "randn", "tensor", "zeros")
     originals = {name: getattr(torch, name) for name in factory_names}
+    original_pin_memory = torch.Tensor.pin_memory
 
     def make_cpu_fallback(original_func):
         def cpu_fallback(*args, **kwargs):
@@ -52,11 +53,13 @@ def _redirect_cuda_allocations_when_cpu_only(device: str):
 
     for name, original in originals.items():
         setattr(torch, name, make_cpu_fallback(original))
+    torch.Tensor.pin_memory = lambda tensor, *args, **kwargs: tensor
     try:
         yield
     finally:
         for name, original in originals.items():
             setattr(torch, name, original)
+        torch.Tensor.pin_memory = original_pin_memory
 
 
 def _install_cpu_dtype_compatibility_hooks(model: torch.nn.Module, device: str) -> None:
@@ -158,6 +161,7 @@ class Sam3Runtime:
         checkpoint_path = sam3_cfg.get("checkpoint_path")
         bpe_path = sam3_cfg.get("bpe_path")
         device = _resolve_device(device)
+        self.device = device
 
         # Load once and keep in memory
         with _redirect_cuda_allocations_when_cpu_only(device):
@@ -200,7 +204,8 @@ class Sam3Runtime:
         canvas_size = pil_image.size
 
         # Embed once per image
-        image_state = self.processor.set_image(pil_image)
+        with _redirect_cuda_allocations_when_cpu_only(self.device):
+            image_state = self.processor.set_image(pil_image)
         cache_item = {
             "image_state": image_state,
             "pil_image": pil_image,
@@ -252,8 +257,9 @@ class Sam3Runtime:
             all_results: List[Dict] = []
 
             for prompt in payload.prompts:
-                self.processor.reset_all_prompts(state)
-                result_state = self.processor.set_text_prompt(prompt=prompt, state=state)
+                with _redirect_cuda_allocations_when_cpu_only(self.device):
+                    self.processor.reset_all_prompts(state)
+                    result_state = self.processor.set_text_prompt(prompt=prompt, state=state)
                 masks = result_state.get("masks", [])
                 boxes = result_state.get("boxes", [])
                 scores = result_state.get("scores", [])
