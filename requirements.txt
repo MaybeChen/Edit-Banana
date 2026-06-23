@@ -3,6 +3,7 @@
 setuptools<82
 einops
 pycocotools
+psutil
 pyyaml
 opencv-python-headless
 numpy
