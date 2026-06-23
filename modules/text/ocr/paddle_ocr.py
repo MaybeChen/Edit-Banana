@@ -2,7 +2,7 @@
 PaddleOCR adapter (optional).
 
 Same interface as LocalOCR: analyze_image(image_path) -> OCRResult.
-Recommended: paddlepaddle==3.2.2 + paddleocr (3.3.0+ has CPU oneDNN bug).
+Recommended for PaddleOCR 2.x: paddleocr>=2.8.0,<3.0.0 + paddlepaddle>=2.6.1,<3.0.0.
 """
 
 from pathlib import Path
@@ -28,24 +28,83 @@ class PaddleOCRAdapter:
     Requires: paddleocr, paddlepaddle (or paddlepaddle-gpu).
     """
 
-    def __init__(self, use_angle_cls: bool = True, lang: str = "ch"):
+    def __init__(
+        self,
+        use_angle_cls: bool = True,
+        lang: str = "ch",
+        model_dir: str = None,
+        det_model_dir: str = None,
+        rec_model_dir: str = None,
+        cls_model_dir: str = None,
+        allow_download: bool = True,
+    ):
         if PaddleOCR is None:
             raise ImportError(
                 "Install PaddleOCR: pip install paddleocr paddlepaddle (or paddlepaddle-gpu)"
             )
+        det_model_dir = det_model_dir or self._find_local_model_dir(model_dir, "det")
+        rec_model_dir = rec_model_dir or self._find_local_model_dir(model_dir, "rec")
+        cls_model_dir = cls_model_dir or self._find_local_model_dir(model_dir, "cls")
+        if not allow_download:
+            self._require_local_model_dir(det_model_dir, "det")
+            self._require_local_model_dir(rec_model_dir, "rec")
+            if use_angle_cls:
+                self._require_local_model_dir(cls_model_dir, "cls")
+        kwargs = {
+            "use_angle_cls": use_angle_cls,
+            "lang": lang,
+        }
+        if det_model_dir:
+            kwargs["det_model_dir"] = det_model_dir
+        if rec_model_dir:
+            kwargs["rec_model_dir"] = rec_model_dir
+        if cls_model_dir:
+            kwargs["cls_model_dir"] = cls_model_dir
         try:
-            self._engine = PaddleOCR(use_angle_cls=use_angle_cls, lang=lang)
+            self._engine = PaddleOCR(**kwargs)
         except AttributeError as e:
             if "set_optimization_level" in str(e):
                 raise RuntimeError(
                     "PaddleOCR incompatible with this PaddlePaddle (missing set_optimization_level).\n"
-                    "Install PaddlePaddle 3.x and PaddleOCR 3.x:\n"
+                    "Install compatible PaddleOCR 2.x and PaddlePaddle 2.x:\n"
                     "  pip uninstall paddleocr paddlepaddle paddlepaddle-gpu paddlex -y\n"
-                    "  pip install \"paddlepaddle>=3.0\" paddleocr   # CPU\n"
+                    "  pip install \"paddleocr>=2.8.0,<3.0.0\" \"paddlepaddle>=2.6.1,<3.0.0\"   # CPU\n"
                     "  # GPU: pip install paddlepaddle-gpu paddleocr\n"
                     "See README Optional PaddleOCR section."
                 ) from e
             raise
+
+    @staticmethod
+    def _find_local_model_dir(model_dir: str, kind: str) -> str:
+        """Find a PaddleOCR 2.x inference model directory under a local model root."""
+        if not model_dir:
+            return None
+        root = Path(model_dir)
+        if not root.exists():
+            return None
+
+        direct = root / kind
+        if direct.exists():
+            return str(direct)
+
+        matches = sorted(root.glob(f"*_{kind}_infer"))
+        return str(matches[0]) if matches else None
+
+    @staticmethod
+    def _require_local_model_dir(model_dir: str, kind: str) -> None:
+        """Fail fast instead of letting PaddleOCR download when local models are required."""
+        if not model_dir:
+            raise FileNotFoundError(
+                f"PaddleOCR {kind} model directory is not configured; set ocr.paddleocr.{kind}_model_dir "
+                f"or put a *_{kind}_infer directory under ocr.paddleocr.model_dir."
+            )
+        path = Path(model_dir)
+        required = ["inference.pdmodel", "inference.pdiparams"]
+        missing = [name for name in required if not (path / name).exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"PaddleOCR {kind} model directory is incomplete: {path}. Missing: {', '.join(missing)}"
+            )
 
     def _parse_result(self, result: Any) -> List[TextBlock]:
         """Parse PaddleOCR 2.x or 3.x result into list of TextBlock."""
