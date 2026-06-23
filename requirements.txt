@@ -1,4 +1,6 @@
 # Pipeline & optional web backend
+# SAM3 currently imports pkg_resources, which was removed from setuptools 82.
+setuptools<82
 pyyaml
 opencv-python-headless
 numpy
@@ -11,7 +13,7 @@ uvicorn[standard]
 # Text OCR (local, default)
 pytesseract
 
-# Optional: PaddleOCR (better for 中英文混排). Set ocr.engine: "paddleocr" in config.
+# Optional: PaddleOCR (better for mixed Chinese/English text). Set ocr.engine: "paddleocr" in config.
 # Use PaddlePaddle 3.2.2 + PaddleOCR 3.x (3.3.0+ has CPU oneDNN bug, will fallback to Tesseract):
 #   pip install paddlepaddle==3.2.2 paddleocr   # or paddlepaddle-gpu==3.2.2
 
