@@ -218,7 +218,11 @@ class SAM3Model(ModelWrapper):
         super().__init__()
         self.checkpoint_path = checkpoint_path
         self.bpe_path = bpe_path
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        requested_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        if str(requested_device).startswith("cuda") and not torch.cuda.is_available():
+            print("[SAM3Model] Warning: CUDA requested but PyTorch has no CUDA support; falling back to CPU")
+            requested_device = "cpu"
+        self.device = requested_device
         self._processor = None
         
         # 图像状态缓存
@@ -1140,4 +1144,3 @@ def extract_with_prompts(image_path: str,
         prompts,
         score_threshold=score_threshold
     )
-
