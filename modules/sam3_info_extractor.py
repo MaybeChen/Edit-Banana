@@ -248,7 +248,7 @@ class SAM3Model(ModelWrapper):
                 load_from_HF=False,
                 device=self.device
             )
-        self._processor = Sam3Processor(self._model)
+            self._processor = Sam3Processor(self._model, device=self.device)
         self._is_loaded = True
         
         print("[SAM3Model] 模型加载完成！")

@@ -145,7 +145,7 @@ class Sam3Runtime:
                 load_from_HF=False,
                 device=device,
             )
-        self.processor = Sam3Processor(self.model, device=device)
+            self.processor = Sam3Processor(self.model, device=device)
 
         # Log actual runtime device info for visibility
         visible = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
