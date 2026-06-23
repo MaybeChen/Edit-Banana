@@ -4,6 +4,7 @@ import base64
 import io
 import os
 from collections import OrderedDict
+from contextlib import contextmanager
 from typing import Dict, List, Literal, Optional
 
 import cv2
@@ -17,6 +18,45 @@ from PIL import Image
 
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
+
+
+def _resolve_device(device: Optional[str]) -> str:
+    requested = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if requested == "auto":
+        requested = "cuda" if torch.cuda.is_available() else "cpu"
+    if str(requested).startswith("cuda") and not torch.cuda.is_available():
+        print("[SAM3] Warning: CUDA requested but PyTorch has no CUDA support; falling back to CPU")
+        requested = "cpu"
+    return requested
+
+
+@contextmanager
+def _redirect_cuda_allocations_when_cpu_only(device: str):
+    """Redirect SAM3 hard-coded CUDA tensor allocations to CPU for CPU-only PyTorch."""
+    should_redirect = device == "cpu" and not torch.cuda.is_available()
+    if not should_redirect:
+        yield
+        return
+
+    factory_names = ("arange", "empty", "full", "linspace", "ones", "rand", "randn", "tensor", "zeros")
+    originals = {name: getattr(torch, name) for name in factory_names}
+
+    def make_cpu_fallback(original_func):
+        def cpu_fallback(*args, **kwargs):
+            requested_device = kwargs.get("device")
+            if requested_device is not None and str(requested_device).startswith("cuda"):
+                kwargs["device"] = "cpu"
+            return original_func(*args, **kwargs)
+
+        return cpu_fallback
+
+    for name, original in originals.items():
+        setattr(torch, name, make_cpu_fallback(original))
+    try:
+        yield
+    finally:
+        for name, original in originals.items():
+            setattr(torch, name, original)
 
 
 class PredictRequest(BaseModel):
@@ -82,7 +122,7 @@ class Sam3Runtime:
     def __init__(
         self,
         config_path: str,
-        device: str = "cuda",
+        device: str = "auto",
         cache_size: int = 2,
     ) -> None:
         if not os.path.exists(config_path):
@@ -95,14 +135,16 @@ class Sam3Runtime:
         self.min_area = sam3_cfg.get("min_area", 100)
         checkpoint_path = sam3_cfg.get("checkpoint_path")
         bpe_path = sam3_cfg.get("bpe_path")
+        device = _resolve_device(device)
 
         # Load once and keep in memory
-        self.model = build_sam3_image_model(
-            bpe_path=bpe_path,
-            checkpoint_path=checkpoint_path,
-            load_from_HF=False,
-            device=device,
-        )
+        with _redirect_cuda_allocations_when_cpu_only(device):
+            self.model = build_sam3_image_model(
+                bpe_path=bpe_path,
+                checkpoint_path=checkpoint_path,
+                load_from_HF=False,
+                device=device,
+            )
         self.processor = Sam3Processor(self.model, device=device)
 
         # Log actual runtime device info for visibility
@@ -274,7 +316,7 @@ def parse_args() -> argparse.Namespace:
         default=os.path.join(os.path.dirname(__file__), "..", "config", "config.yaml"),
         help="Path to config.yaml",
     )
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="Device id")
+    parser.add_argument("--device", default="auto", help="Device id: auto, cpu, cuda, cuda:0, ...")
     parser.add_argument("--cache-size", type=int, default=2, help="LRU cache size for encoded images")
     return parser.parse_args()
 
