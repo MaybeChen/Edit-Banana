@@ -19,7 +19,7 @@ def main():
     parser.add_argument("--workers", type=int, default=1, help="Number of SAM3 server processes")
     parser.add_argument("--rmbg", type=int, default=0, help="Number of RMBG server processes (0 = none)")
     parser.add_argument("--config", type=str, default=None, help="Path to config.yaml")
-    parser.add_argument("--device", type=str, default="cuda", help="Device for SAM3 (e.g. cuda, cpu)")
+    parser.add_argument("--device", type=str, default="auto", help="Device for SAM3 (e.g. auto, cuda, cpu)")
     parser.add_argument("--base-port", type=int, default=8001, help="First SAM3 port (default 8001)")
     parser.add_argument("--rmbg-base-port", type=int, default=9101, help="First RMBG port (default 9101)")
     args = parser.parse_args()
