@@ -248,10 +248,35 @@ class SAM3Model(ModelWrapper):
                 load_from_HF=False,
                 device=self.device
             )
+            self._install_cpu_dtype_compatibility_hooks()
             self._processor = Sam3Processor(self._model, device=self.device)
         self._is_loaded = True
         
         print("[SAM3Model] 模型加载完成！")
+
+    def _install_cpu_dtype_compatibility_hooks(self):
+        """Keep CPU linear inputs aligned with layer weights when SAM3 emits bf16 tensors."""
+        if self.device != "cpu" or self._model is None:
+            return
+
+        def match_linear_input_dtype(module, inputs):
+            if not inputs:
+                return inputs
+            first_arg = inputs[0]
+            if (
+                isinstance(first_arg, torch.Tensor)
+                and first_arg.is_floating_point()
+                and first_arg.dtype != module.weight.dtype
+            ):
+                return (first_arg.to(dtype=module.weight.dtype),) + inputs[1:]
+            return inputs
+
+        self._cpu_dtype_hook_handles = []
+        for module in self._model.modules():
+            if isinstance(module, torch.nn.Linear):
+                self._cpu_dtype_hook_handles.append(
+                    module.register_forward_pre_hook(match_linear_input_dtype)
+                )
 
     @contextmanager
     def _redirect_cuda_allocations_when_cpu_only(self):

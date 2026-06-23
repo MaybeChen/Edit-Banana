@@ -149,6 +149,9 @@ Save and run the main pipeline (CLI or server).
 - **`AssertionError: Torch not compiled with CUDA enabled`**  
   You installed a CPU-only PyTorch build but CUDA was requested by config or SAM3 internals. Set `sam3.device: "cpu"` in `config/config.yaml`, or install a CUDA-enabled PyTorch build that matches your NVIDIA driver/CUDA stack.
 
+- **`RuntimeError: mat1 and mat2 must have the same dtype`**  
+  CPU mode can expose dtype mismatches when SAM3 emits BF16 activations but linear weights remain Float. The project installs CPU compatibility hooks to align linear inputs with layer weights; if you still see this, update to the latest code first.
+
 - **`ModuleNotFoundError: No module named 'triton'`**  
   SAM3 may import Triton through its PyTorch attention stack. On Linux, install the official package with `pip install triton` in the same environment. On native Windows, official Triton support is limited; try `pip install triton-windows` only if your PyTorch/CUDA/Python versions are supported, otherwise run SAM3 from WSL/Linux.
 

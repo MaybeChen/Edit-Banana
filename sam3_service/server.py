@@ -59,6 +59,28 @@ def _redirect_cuda_allocations_when_cpu_only(device: str):
             setattr(torch, name, original)
 
 
+def _install_cpu_dtype_compatibility_hooks(model: torch.nn.Module, device: str) -> None:
+    """Keep CPU linear inputs aligned with layer weights when SAM3 emits bf16 tensors."""
+    if device != "cpu":
+        return
+
+    def match_linear_input_dtype(module, inputs):
+        if not inputs:
+            return inputs
+        first_arg = inputs[0]
+        if (
+            isinstance(first_arg, torch.Tensor)
+            and first_arg.is_floating_point()
+            and first_arg.dtype != module.weight.dtype
+        ):
+            return (first_arg.to(dtype=module.weight.dtype),) + inputs[1:]
+        return inputs
+
+    for module in model.modules():
+        if isinstance(module, torch.nn.Linear):
+            module.register_forward_pre_hook(match_linear_input_dtype)
+
+
 class PredictRequest(BaseModel):
     image_path: str = Field(..., description="Path to the image that the server can read")
     prompts: List[str] = Field(..., min_items=1, description="Text prompts for SAM3")
@@ -145,6 +167,7 @@ class Sam3Runtime:
                 load_from_HF=False,
                 device=device,
             )
+            _install_cpu_dtype_compatibility_hooks(self.model, device)
             self.processor = Sam3Processor(self.model, device=device)
 
         # Log actual runtime device info for visibility
