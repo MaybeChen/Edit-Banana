@@ -35,14 +35,17 @@ class TextRestorer:
         self,
         formula_engine: str = "pix2text",
         ocr_engine: str = "tesseract",
+        ocr_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Args:
             formula_engine: Formula engine ('pix2text', 'none').
             ocr_engine: Layout/text OCR engine ('tesseract', 'paddleocr'). PaddleOCR often better for mixed CN/EN.
+            ocr_config: OCR config block from config.yaml.
         """
         self.formula_engine = formula_engine
         self._ocr_engine = (ocr_engine or "tesseract").strip().lower()
+        self._ocr_config = ocr_config or {}
 
         self._layout_ocr = None
         self._pix2text_ocr = None
@@ -66,7 +69,7 @@ class TextRestorer:
             if self._ocr_engine == "paddleocr":
                 try:
                     from .ocr.paddle_ocr import PaddleOCRAdapter
-                    self._layout_ocr = PaddleOCRAdapter()
+                    self._layout_ocr = PaddleOCRAdapter(**(self._ocr_config.get("paddleocr") or {}))
                 except Exception as e:
                     import warnings
                     warnings.warn(

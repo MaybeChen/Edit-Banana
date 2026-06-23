@@ -3,7 +3,9 @@ import asyncio
 import base64
 import io
 import os
+import warnings
 from collections import OrderedDict
+from contextlib import contextmanager
 from typing import Dict, List, Literal, Optional
 
 import cv2
@@ -15,8 +17,76 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from PIL import Image
 
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API.*", category=UserWarning)
+warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available. Disabling", category=UserWarning)
+warnings.filterwarnings("ignore", message="Importing from timm.models.layers is deprecated.*", category=FutureWarning)
+
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
+
+
+def _resolve_device(device: Optional[str]) -> str:
+    requested = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if requested == "auto":
+        requested = "cuda" if torch.cuda.is_available() else "cpu"
+    if str(requested).startswith("cuda") and not torch.cuda.is_available():
+        print("[SAM3] Warning: CUDA requested but PyTorch has no CUDA support; falling back to CPU")
+        requested = "cpu"
+    return requested
+
+
+@contextmanager
+def _redirect_cuda_allocations_when_cpu_only(device: str):
+    """Redirect SAM3 hard-coded CUDA tensor allocations to CPU for CPU-only PyTorch."""
+    should_redirect = device == "cpu" and not torch.cuda.is_available()
+    if not should_redirect:
+        yield
+        return
+
+    factory_names = ("arange", "empty", "full", "linspace", "ones", "rand", "randn", "tensor", "zeros")
+    originals = {name: getattr(torch, name) for name in factory_names}
+    original_pin_memory = torch.Tensor.pin_memory
+
+    def make_cpu_fallback(original_func):
+        def cpu_fallback(*args, **kwargs):
+            requested_device = kwargs.get("device")
+            if requested_device is not None and str(requested_device).startswith("cuda"):
+                kwargs["device"] = "cpu"
+            return original_func(*args, **kwargs)
+
+        return cpu_fallback
+
+    for name, original in originals.items():
+        setattr(torch, name, make_cpu_fallback(original))
+    torch.Tensor.pin_memory = lambda tensor, *args, **kwargs: tensor
+    try:
+        yield
+    finally:
+        for name, original in originals.items():
+            setattr(torch, name, original)
+        torch.Tensor.pin_memory = original_pin_memory
+
+
+def _install_cpu_dtype_compatibility_hooks(model: torch.nn.Module, device: str) -> None:
+    """Keep CPU linear inputs aligned with layer weights when SAM3 emits bf16 tensors."""
+    if device != "cpu":
+        return
+
+    def match_linear_input_dtype(module, inputs):
+        if not inputs:
+            return inputs
+        first_arg = inputs[0]
+        if (
+            isinstance(first_arg, torch.Tensor)
+            and first_arg.is_floating_point()
+            and first_arg.dtype != module.weight.dtype
+        ):
+            return (first_arg.to(dtype=module.weight.dtype),) + inputs[1:]
+        return inputs
+
+    for module in model.modules():
+        if isinstance(module, torch.nn.Linear):
+            module.register_forward_pre_hook(match_linear_input_dtype)
 
 
 class PredictRequest(BaseModel):
@@ -82,7 +152,7 @@ class Sam3Runtime:
     def __init__(
         self,
         config_path: str,
-        device: str = "cuda",
+        device: str = "auto",
         cache_size: int = 2,
     ) -> None:
         if not os.path.exists(config_path):
@@ -95,15 +165,19 @@ class Sam3Runtime:
         self.min_area = sam3_cfg.get("min_area", 100)
         checkpoint_path = sam3_cfg.get("checkpoint_path")
         bpe_path = sam3_cfg.get("bpe_path")
+        device = _resolve_device(device)
+        self.device = device
 
         # Load once and keep in memory
-        self.model = build_sam3_image_model(
-            bpe_path=bpe_path,
-            checkpoint_path=checkpoint_path,
-            load_from_HF=False,
-            device=device,
-        )
-        self.processor = Sam3Processor(self.model, device=device)
+        with _redirect_cuda_allocations_when_cpu_only(device):
+            self.model = build_sam3_image_model(
+                bpe_path=bpe_path,
+                checkpoint_path=checkpoint_path,
+                load_from_HF=False,
+                device=device,
+            )
+            _install_cpu_dtype_compatibility_hooks(self.model, device)
+            self.processor = Sam3Processor(self.model, device=device)
 
         # Log actual runtime device info for visibility
         visible = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
@@ -135,7 +209,8 @@ class Sam3Runtime:
         canvas_size = pil_image.size
 
         # Embed once per image
-        image_state = self.processor.set_image(pil_image)
+        with _redirect_cuda_allocations_when_cpu_only(self.device):
+            image_state = self.processor.set_image(pil_image)
         cache_item = {
             "image_state": image_state,
             "pil_image": pil_image,
@@ -187,8 +262,9 @@ class Sam3Runtime:
             all_results: List[Dict] = []
 
             for prompt in payload.prompts:
-                self.processor.reset_all_prompts(state)
-                result_state = self.processor.set_text_prompt(prompt=prompt, state=state)
+                with _redirect_cuda_allocations_when_cpu_only(self.device):
+                    self.processor.reset_all_prompts(state)
+                    result_state = self.processor.set_text_prompt(prompt=prompt, state=state)
                 masks = result_state.get("masks", [])
                 boxes = result_state.get("boxes", [])
                 scores = result_state.get("scores", [])
@@ -274,7 +350,7 @@ def parse_args() -> argparse.Namespace:
         default=os.path.join(os.path.dirname(__file__), "..", "config", "config.yaml"),
         help="Path to config.yaml",
     )
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="Device id")
+    parser.add_argument("--device", default="auto", help="Device id: auto, cpu, cuda, cuda:0, ...")
     parser.add_argument("--cache-size", type=int, default=2, help="LRU cache size for encoded images")
     return parser.parse_args()
 

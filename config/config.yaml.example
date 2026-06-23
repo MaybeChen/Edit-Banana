@@ -33,9 +33,20 @@ prompt_groups:
     min_area: 500
     priority: 1
 
-# Text OCR engine: tesseract (system) or paddleocr (better mixed CN/EN; pip install paddlepaddle==3.2.2 paddleocr)
+# Text OCR engine: tesseract (system) or paddleocr (better mixed CN/EN)
 ocr:
   engine: "tesseract"   # "tesseract" | "paddleocr"
+  paddleocr:
+    lang: "ch"
+    use_angle_cls: true
+    # Set allow_download: false to require local models and fail fast instead of downloading.
+    allow_download: false
+    # Local PaddleOCR 2.x model root. Auto-detects *_det_infer, *_rec_infer, *_cls_infer under this directory.
+    model_dir: "models/paddleocr"
+    # Or set explicit model directories:
+    # det_model_dir: "models/paddleocr/ch_PP-OCRv4_det_infer"
+    # rec_model_dir: "models/paddleocr/ch_PP-OCRv4_rec_infer"
+    # cls_model_dir: "models/paddleocr/ch_ppocr_mobile_v2.0_cls_infer"
 
 # Multimodal / VLM (optional, for text/OCR)
 multimodal:

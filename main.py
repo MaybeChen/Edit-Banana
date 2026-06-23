@@ -94,10 +94,12 @@ class Pipeline:
     def text_restorer(self):
         """OCR/text step; None if deps missing."""
         if self._text_restorer is None and TextRestorer is not None:
-            ocr_engine = (self.config.get("ocr") or {}).get("engine", "tesseract")
+            ocr_config = self.config.get("ocr") or {}
+            ocr_engine = ocr_config.get("engine", "tesseract")
             self._text_restorer = TextRestorer(
                 formula_engine="none",
                 ocr_engine=ocr_engine,
+                ocr_config=ocr_config,
             )
         return self._text_restorer
     
