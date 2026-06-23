@@ -13,6 +13,7 @@ from PIL import Image
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 import threading
@@ -240,16 +241,39 @@ class SAM3Model(ModelWrapper):
         from sam3.model_builder import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
         
-        self._model = build_sam3_image_model(
-            bpe_path=self.bpe_path,
-            checkpoint_path=self.checkpoint_path,
-            load_from_HF=False,
-            device=self.device
-        )
+        with self._redirect_cuda_allocations_when_cpu_only():
+            self._model = build_sam3_image_model(
+                bpe_path=self.bpe_path,
+                checkpoint_path=self.checkpoint_path,
+                load_from_HF=False,
+                device=self.device
+            )
         self._processor = Sam3Processor(self._model)
         self._is_loaded = True
         
         print("[SAM3Model] 模型加载完成！")
+
+    @contextmanager
+    def _redirect_cuda_allocations_when_cpu_only(self):
+        """Redirect SAM3 hard-coded CUDA tensor allocations to CPU for CPU-only PyTorch."""
+        should_redirect = self.device == "cpu" and not torch.cuda.is_available()
+        if not should_redirect:
+            yield
+            return
+
+        original_zeros = torch.zeros
+
+        def zeros_cpu_fallback(*args, **kwargs):
+            device = kwargs.get("device")
+            if device is not None and str(device).startswith("cuda"):
+                kwargs["device"] = "cpu"
+            return original_zeros(*args, **kwargs)
+
+        torch.zeros = zeros_cpu_fallback
+        try:
+            yield
+        finally:
+            torch.zeros = original_zeros
     
     def predict(self, image_path: str, prompts: List[str], 
                 score_threshold: float = 0.5,
