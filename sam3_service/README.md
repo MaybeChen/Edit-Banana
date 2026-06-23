@@ -26,6 +26,7 @@ curl -s http://127.0.0.1:8001/health
 
 Notes:
 - `--cache-size` controls the LRU cache size for encoded images.
+- `--device` defaults to `auto` and falls back to CPU when CUDA is unavailable.
 - Workers are one process per port to keep a single model copy per process.
 - Set `--device cpu` to run without GPU (slow, but useful for debugging).
 
@@ -89,4 +90,3 @@ result = pool.predict(
   - Response body:
     - `image_size`: `{ "width": int, "height": int }`
     - `results`: List of detections. Each item contains `prompt`, `score`, `bbox`, `polygon`, `area`, and optional `mask` with `data`, `format`, `shape` when `return_masks` is true.
-
