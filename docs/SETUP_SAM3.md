@@ -146,6 +146,12 @@ Save and run the main pipeline (CLI or server).
 - **`build_sam3_image_model` cannot find checkpoint / BPE**  
   Ensure `checkpoint_path` and `bpe_path` in `config.yaml` match real files (absolute or relative to project root).
 
+- **`AssertionError: Torch not compiled with CUDA enabled`**  
+  You installed a CPU-only PyTorch build but CUDA was requested by config or SAM3 internals. Set `sam3.device: "cpu"` in `config/config.yaml`, or install a CUDA-enabled PyTorch build that matches your NVIDIA driver/CUDA stack.
+
+- **`ModuleNotFoundError: No module named 'triton'`**  
+  SAM3 may import Triton through its PyTorch attention stack. On Linux, install the official package with `pip install triton` in the same environment. On native Windows, official Triton support is limited; try `pip install triton-windows` only if your PyTorch/CUDA/Python versions are supported, otherwise run SAM3 from WSL/Linux.
+
 - **Hugging Face download is slow or fails**  
   Use **ModelScope** instead: <https://modelscope.cn/models/facebook/sam3> (see Option A above).
 
