@@ -261,19 +261,25 @@ class SAM3Model(ModelWrapper):
             yield
             return
 
-        original_zeros = torch.zeros
+        factory_names = ("arange", "empty", "full", "linspace", "ones", "rand", "randn", "tensor", "zeros")
+        originals = {name: getattr(torch, name) for name in factory_names}
 
-        def zeros_cpu_fallback(*args, **kwargs):
-            device = kwargs.get("device")
-            if device is not None and str(device).startswith("cuda"):
-                kwargs["device"] = "cpu"
-            return original_zeros(*args, **kwargs)
+        def make_cpu_fallback(original_func):
+            def cpu_fallback(*args, **kwargs):
+                device = kwargs.get("device")
+                if device is not None and str(device).startswith("cuda"):
+                    kwargs["device"] = "cpu"
+                return original_func(*args, **kwargs)
 
-        torch.zeros = zeros_cpu_fallback
+            return cpu_fallback
+
+        for name, original in originals.items():
+            setattr(torch, name, make_cpu_fallback(original))
         try:
             yield
         finally:
-            torch.zeros = original_zeros
+            for name, original in originals.items():
+                setattr(torch, name, original)
     
     def predict(self, image_path: str, prompts: List[str], 
                 score_threshold: float = 0.5,
