@@ -25,6 +25,7 @@ import math
 from pathlib import Path
 from dataclasses import dataclass, field
 
+import torch
 from pix2text import Pix2Text
 
 
@@ -69,14 +70,18 @@ class Pix2TextOCR:
                 print(f"公式: {block.text}")
     """
     
-    def __init__(self, device: str = 'cuda', languages: tuple = ('en',)):
+    def __init__(self, device: str = None, languages: tuple = ('en',)):
         """
         初始化 Pix2Text
         
         Args:
-            device: 计算设备（cuda 使用 GPU3）
+            device: 计算设备（None 时自动选择 cuda/cpu）
             languages: 文字语言（影响非公式部分的识别）
         """
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        if str(device).startswith("cuda") and not torch.cuda.is_available():
+            print("   Pix2Text Warning: CUDA requested but PyTorch has no CUDA support; falling back to CPU")
+            device = "cpu"
         print(f"   Pix2Text 使用设备: {device}")
         
         # 降低 MFD 检测阈值，提高公式检测率

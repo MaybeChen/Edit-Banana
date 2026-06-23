@@ -218,9 +218,9 @@ pip install -r requirements.txt
 
 <details> <summary><b>🧩 进阶可选功能 (OCR 引擎、公式、去背景 RMBG) - 点击展开</b></summary>
 
-- PaddleOCR (替代方案/对于混合文本效果更好)：使用 `paddlepaddle==3.2.2` 以避免 3.3.0 版本的 Bug。
+- PaddleOCR (替代方案/对于混合文本效果更好)：使用兼容的 PaddleOCR 2.x + PaddlePaddle 2.x。
   ```bash
-  pip install paddlepaddle==3.2.2 paddleocr
+  pip install "paddleocr>=2.8.0,<3.0.0" "paddlepaddle>=2.6.1,<3.0.0"
   ```
 - 公式 (Pix2Text)：
   ```bash
@@ -251,8 +251,11 @@ pip install -r requirements.txt
 
 **常见问题**:
 - "no kernel image is available..."：GPU 架构不匹配。尝试升级 PyTorch，或者设置 `sam3.device: "cpu"`。
+- "Torch not compiled with CUDA enabled"：当前安装的是 CPU 版 PyTorch，但配置或 SAM3 内部代码请求了 CUDA。请在 `config/config.yaml` 中设置 `sam3.device: "cpu"`，或重新安装带 CUDA 的 PyTorch。
+- "mat1 and mat2 must have the same dtype"：CPU 模式下 SAM3 内部可能产生 BF16 输入但线性层权重为 Float；项目会在 CPU 模式下安装兼容 hook 对齐 dtype，若仍出现请优先确认已更新到最新代码。
+- "No module named 'triton'"：SAM3 的 PyTorch 注意力栈可能需要 Triton。Linux 下在同一环境执行 `pip install triton`；Windows 原生环境可尝试 `pip install triton-windows`，但需要匹配 PyTorch/CUDA/Python 版本，不满足时建议改用 WSL/Linux 运行 SAM3。
 - "Model file not found at ...rmbg/..."：RMBG 模块是可选的，如果你需要，请通过脚本下载启用。
-- "PaddleOCR inference failed..."：请使用 `paddlepaddle==3.2.2` 版本或回退到使用 Tesseract 识别。
+- "PaddleOCR inference failed..."：请使用兼容的 PaddleOCR 2.x + PaddlePaddle 2.x，或回退到使用 Tesseract 识别。
 </details>
 
 ---
