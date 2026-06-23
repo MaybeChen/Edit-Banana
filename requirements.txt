@@ -1,4 +1,6 @@
 # Pipeline & optional web backend
+# SAM3 currently imports pkg_resources, which was removed from setuptools 82.
+setuptools<82
 pyyaml
 opencv-python-headless
 numpy
