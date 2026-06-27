@@ -9,6 +9,7 @@ Usage:
     xml_string = restorer.process("input.png")
 """
 
+import json
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -49,6 +50,8 @@ class TextRestorer:
 
         self._layout_ocr = None
         self._pix2text_ocr = None
+        self.last_raw_ocr_blocks: List[Dict[str, Any]] = []
+        self.last_text_blocks: List[Dict[str, Any]] = []
 
         self.font_size_processor = FontSizeProcessor()
         self.font_family_processor = FontFamilyProcessor()
@@ -146,6 +149,8 @@ class TextRestorer:
         # Step 1: OCR
         ocr_result, formula_result = self._run_ocr(str(image_path))
 
+        self.last_raw_ocr_blocks = self._ocr_result_to_dict_list(ocr_result)
+
         # Step 2: Formula (layout OCR + Pix2Text)
         processing_start = time.time()
 
@@ -189,9 +194,30 @@ class TextRestorer:
         
         self.timing["processing"] = time.time() - processing_start
         self.timing["total"] = time.time() - total_start
+        self.last_text_blocks = text_blocks
         
         return text_blocks
     
+    def save_ocr_artifacts(self, output_dir: str, image_path: str) -> str:
+        """Save OCR recognition results as an intermediate JSON artifact."""
+        output_path = Path(output_dir) / "ocr_result.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "image_path": str(image_path),
+            "ocr_engine": self._ocr_engine,
+            "formula_engine": self.formula_engine,
+            "timing": self.timing,
+            "raw_ocr_blocks": self.last_raw_ocr_blocks,
+            "processed_text_blocks": self.last_text_blocks,
+            "statistics": {
+                "raw_count": len(self.last_raw_ocr_blocks),
+                "processed_count": len(self.last_text_blocks),
+            },
+        }
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return str(output_path)
+
     def restore(
         self,
         image_path: str,
