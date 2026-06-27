@@ -9,11 +9,12 @@ Usage:
     xml_string = restorer.process("input.png")
 """
 
+import json
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from .ocr.local_ocr import LocalOCR
 from .coord_processor import CoordProcessor
@@ -46,9 +47,14 @@ class TextRestorer:
         self.formula_engine = formula_engine
         self._ocr_engine = (ocr_engine or "tesseract").strip().lower()
         self._ocr_config = ocr_config or {}
+        paddle_config = self._ocr_config.get("paddleocr") or {}
+        self._allow_paddleocr_fallback = bool(paddle_config.get("allow_fallback_to_tesseract", False))
+        self._actual_ocr_engine = None
 
         self._layout_ocr = None
         self._pix2text_ocr = None
+        self.last_raw_ocr_blocks: List[Dict[str, Any]] = []
+        self.last_text_blocks: List[Dict[str, Any]] = []
 
         self.font_size_processor = FontSizeProcessor()
         self.font_family_processor = FontFamilyProcessor()
@@ -64,13 +70,24 @@ class TextRestorer:
 
     @property
     def layout_ocr(self):
-        """Lazy-init layout OCR (tesseract or paddleocr); fallback to Tesseract if PaddleOCR fails."""
+        """Lazy-init layout OCR (tesseract or paddleocr)."""
         if self._layout_ocr is None:
             if self._ocr_engine == "paddleocr":
                 try:
                     from .ocr.paddle_ocr import PaddleOCRAdapter
-                    self._layout_ocr = PaddleOCRAdapter(**(self._ocr_config.get("paddleocr") or {}))
+                    adapter_config = dict(self._ocr_config.get("paddleocr") or {})
+                    adapter_config.pop("allow_fallback_to_tesseract", None)
+                    self._layout_ocr = PaddleOCRAdapter(**adapter_config)
+                    self._actual_ocr_engine = "paddleocr"
                 except Exception as e:
+                    if not self._allow_paddleocr_fallback:
+                        raise RuntimeError(
+                            "PaddleOCR was requested but could not be initialized. Refusing to silently "
+                            "fall back to Tesseract because that makes OCR results look like PaddleOCR "
+                            "while actually using a different engine. Set "
+                            "ocr.paddleocr.allow_fallback_to_tesseract: true to opt in to fallback.\n"
+                            f"Original PaddleOCR error: {e}"
+                        ) from e
                     import warnings
                     warnings.warn(
                         f"PaddleOCR unavailable ({e}), falling back to Tesseract. See README for compatible install.",
@@ -78,8 +95,10 @@ class TextRestorer:
                         stacklevel=2,
                     )
                     self._layout_ocr = LocalOCR()
+                    self._actual_ocr_engine = "tesseract_fallback"
             else:
                 self._layout_ocr = LocalOCR()
+                self._actual_ocr_engine = "tesseract"
         return self._layout_ocr
 
     @property
@@ -145,6 +164,10 @@ class TextRestorer:
         
         # Step 1: OCR
         ocr_result, formula_result = self._run_ocr(str(image_path))
+        ocr_result.text_blocks = self._merge_adjacent_ocr_blocks(ocr_result.text_blocks)
+        self._print_ocr_debug_blocks(ocr_result, stage="merged")
+
+        self.last_raw_ocr_blocks = self._ocr_result_to_dict_list(ocr_result)
 
         # Step 2: Formula (layout OCR + Pix2Text)
         processing_start = time.time()
@@ -189,9 +212,66 @@ class TextRestorer:
         
         self.timing["processing"] = time.time() - processing_start
         self.timing["total"] = time.time() - total_start
+        self.last_text_blocks = text_blocks
         
         return text_blocks
     
+    def save_ocr_artifacts(self, output_dir: str, image_path: str) -> str:
+        """Save OCR recognition results as an intermediate JSON artifact."""
+        output_path = Path(output_dir) / "ocr_result.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "image_path": str(image_path),
+            "ocr_engine": self._ocr_engine,
+            "formula_engine": self.formula_engine,
+            "timing": self.timing,
+            "raw_ocr_blocks": self.last_raw_ocr_blocks,
+            "processed_text_blocks": self.last_text_blocks,
+            "statistics": {
+                "raw_count": len(self.last_raw_ocr_blocks),
+                "processed_count": len(self.last_text_blocks),
+            },
+        }
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return str(output_path)
+
+    def save_ocr_overlay(self, output_dir: str, image_path: str) -> str:
+        """Draw OCR recognition boxes and text labels on the original image."""
+        output_path = Path(output_dir) / "ocr_overlay.png"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with Image.open(image_path).convert("RGB") as img:
+            overlay = img.copy()
+        draw = ImageDraw.Draw(overlay)
+
+        for idx, block in enumerate(self.last_text_blocks or self.last_raw_ocr_blocks, start=1):
+            polygon = block.get("polygon") or []
+            if polygon and len(polygon) >= 3:
+                points = [(float(x), float(y)) for x, y in polygon]
+                draw.line(points + [points[0]], fill=(255, 0, 0), width=2)
+                label_x = min(p[0] for p in points)
+                label_y = max(0, min(p[1] for p in points) - 14)
+            else:
+                geo = block.get("geometry", {})
+                x = float(geo.get("x", 0))
+                y = float(geo.get("y", 0))
+                w = float(geo.get("width", 0))
+                h = float(geo.get("height", 0))
+                if w <= 0 or h <= 0:
+                    continue
+                draw.rectangle([x, y, x + w, y + h], outline=(255, 0, 0), width=2)
+                label_x = x
+                label_y = max(0, y - 14)
+
+            text = str(block.get("text", ""))[:24]
+            confidence = block.get("confidence")
+            suffix = f" {confidence:.2f}" if isinstance(confidence, (int, float)) else ""
+            draw.text((label_x, label_y), f"{idx}:{text}{suffix}", fill=(255, 0, 0))
+
+        overlay.save(output_path)
+        return str(output_path)
+
     def restore(
         self,
         image_path: str,
@@ -269,9 +349,19 @@ class TextRestorer:
         print(f"\n📖 Text OCR ({engine_label})...")
         text_start = time.time()
         try:
-            ocr_result = self.layout_ocr.analyze_image(image_path)
+            layout_ocr = self.layout_ocr
+            engine_label = self._actual_ocr_engine or layout_ocr.__class__.__name__
+            print(f"   OCR backend resolved: {engine_label}")
+            ocr_result = layout_ocr.analyze_image(image_path)
         except Exception as e:
             if self._ocr_engine == "paddleocr":
+                if not self._allow_paddleocr_fallback:
+                    raise RuntimeError(
+                        "PaddleOCR inference failed and fallback is disabled. Set "
+                        "ocr.paddleocr.allow_fallback_to_tesseract: true only if you accept "
+                        "Tesseract results.\n"
+                        f"Original PaddleOCR inference error: {e!r}"
+                    ) from e
                 import warnings
                 warnings.warn(
                     f"PaddleOCR inference failed ({e!r}), falling back to Tesseract.",
@@ -279,11 +369,13 @@ class TextRestorer:
                     stacklevel=2,
                 )
                 self._layout_ocr = LocalOCR()
+                self._actual_ocr_engine = "tesseract_fallback"
                 ocr_result = self._layout_ocr.analyze_image(image_path)
             else:
                 raise
         self.timing["text_ocr"] = time.time() - text_start
         print(f"   {len(ocr_result.text_blocks)} text blocks ({self.timing['text_ocr']:.2f}s)")
+        self._print_ocr_debug_blocks(ocr_result, stage="raw")
 
         formula_result = None
 
@@ -379,6 +471,7 @@ class TextRestorer:
 
             self.timing["pix2text_ocr"] = time.time() - refine_start
             print(f"   Refined {fixed_count} formula blocks ({self.timing['pix2text_ocr']:.2f}s)")
+            self._print_ocr_debug_blocks(ocr_result, stage="after_formula")
 
             formula_result = None
 
@@ -388,6 +481,121 @@ class TextRestorer:
             print("\nSkipping formula")
 
         return ocr_result, formula_result
+
+    def _merge_adjacent_ocr_blocks(self, blocks: List[Any]) -> List[Any]:
+        """Merge fragmented same-line OCR blocks into line-level text blocks."""
+        if len(blocks) < 2:
+            return blocks
+
+        def bbox(block):
+            poly = getattr(block, "polygon", []) or []
+            if not poly:
+                return [0.0, 0.0, 0.0, 0.0]
+            xs = [float(p[0]) for p in poly]
+            ys = [float(p[1]) for p in poly]
+            return [min(xs), min(ys), max(xs), max(ys)]
+
+        def height(box):
+            return max(box[3] - box[1], 1.0)
+
+        sorted_blocks = sorted(blocks, key=lambda b: ((bbox(b)[1] + bbox(b)[3]) / 2, bbox(b)[0]))
+        rows = []
+        for block in sorted_blocks:
+            box = bbox(block)
+            cy = (box[1] + box[3]) / 2
+            placed = False
+            for row in rows:
+                row_cy = row["cy"]
+                row_h = row["height"]
+                if abs(cy - row_cy) <= max(row_h, height(box)) * 0.45:
+                    row["blocks"].append(block)
+                    row["cy"] = (row_cy * (len(row["blocks"]) - 1) + cy) / len(row["blocks"])
+                    row["height"] = max(row_h, height(box))
+                    placed = True
+                    break
+            if not placed:
+                rows.append({"cy": cy, "height": height(box), "blocks": [block]})
+
+        merged = []
+        merge_count = 0
+        for row in rows:
+            row_blocks = sorted(row["blocks"], key=lambda b: bbox(b)[0])
+            group = []
+            last_box = None
+            for block in row_blocks:
+                box = bbox(block)
+                if not group:
+                    group = [block]
+                    last_box = box
+                    continue
+                gap = box[0] - last_box[2]
+                max_h = max(height(last_box), height(box))
+                # Allow overlap and normal character spacing; split distant labels on the same row.
+                if gap <= max_h * 1.8:
+                    group.append(block)
+                    last_box = [
+                        min(last_box[0], box[0]),
+                        min(last_box[1], box[1]),
+                        max(last_box[2], box[2]),
+                        max(last_box[3], box[3]),
+                    ]
+                else:
+                    merged.append(self._merge_ocr_group(group, bbox))
+                    if len(group) > 1:
+                        merge_count += len(group)
+                    group = [block]
+                    last_box = box
+            if group:
+                merged.append(self._merge_ocr_group(group, bbox))
+                if len(group) > 1:
+                    merge_count += len(group)
+
+        if merge_count:
+            print(f"   OCR merge: merged fragmented character boxes ({merge_count} source blocks -> {len(merged)} blocks)")
+        return merged
+
+    def _merge_ocr_group(self, group: List[Any], bbox_func):
+        if len(group) == 1:
+            return group[0]
+        import copy
+
+        merged = copy.deepcopy(group[0])
+        boxes = [bbox_func(block) for block in group]
+        x1 = min(box[0] for box in boxes)
+        y1 = min(box[1] for box in boxes)
+        x2 = max(box[2] for box in boxes)
+        y2 = max(box[3] for box in boxes)
+        merged.text = "".join(getattr(block, "text", "") for block in group)
+        merged.polygon = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+        confidences = [getattr(block, "confidence", None) for block in group]
+        numeric_conf = [c for c in confidences if isinstance(c, (int, float))]
+        if numeric_conf:
+            merged.confidence = sum(numeric_conf) / len(numeric_conf)
+        heights = [max(box[3] - box[1], 1.0) for box in boxes]
+        merged.font_size_px = sorted(heights)[len(heights) // 2]
+        merged.spans = []
+        return merged
+
+    def _print_ocr_debug_blocks(self, ocr_result, stage: str = "raw") -> None:
+        """Print detailed OCR blocks for debugging recognition differences."""
+        blocks = getattr(ocr_result, "text_blocks", []) or []
+        print(f"   OCR debug [{stage}]: {len(blocks)} block(s)")
+        for idx, block in enumerate(blocks, start=1):
+            polygon = getattr(block, "polygon", []) or []
+            if polygon:
+                xs = [float(p[0]) for p in polygon]
+                ys = [float(p[1]) for p in polygon]
+                bbox = [round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1)]
+            else:
+                bbox = None
+            confidence = getattr(block, "confidence", None)
+            conf_text = f" conf={confidence:.4f}" if isinstance(confidence, (int, float)) else ""
+            font_size = getattr(block, "font_size_px", None)
+            font_text = f" font_px={font_size:.1f}" if isinstance(font_size, (int, float)) else ""
+            print(
+                f"      #{idx}: text={getattr(block, 'text', '')!r}"
+                f"{conf_text}{font_text} bbox={bbox} polygon={polygon}"
+            )
 
     def _should_refine_block(self, text: str) -> bool:
         """Whether to try refinement."""
