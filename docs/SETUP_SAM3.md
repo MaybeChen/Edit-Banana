@@ -31,7 +31,8 @@ SAM3_CLONE_URL="https://gitclone.com/github.com/facebookresearch/sam3.git" bash 
 git clone --depth 1 https://gitclone.com/github.com/facebookresearch/sam3.git sam3_src
 # or: git clone --depth 1 https://ghproxy.com/https://github.com/facebookresearch/sam3.git sam3_src
 cd sam3_src && pip install -e . && cd ..
-cp sam3_src/assets/bpe_simple_vocab_16e6.txt.gz models/
+mkdir -p models/sam3
+cp sam3_src/assets/bpe_simple_vocab_16e6.txt.gz models/sam3/
 ```
 
 Verify:
@@ -44,14 +45,15 @@ If that runs without error, the SAM3 library is installed.
 
 ---
 
-## 2. Place BPE vocab under models/
+## 2. Place BPE vocab under models/sam3/
 
-Copy the BPE file from the cloned `sam3_src` into `models/`:
+Copy the BPE file from the cloned `sam3_src` into `models/sam3/`:
 
 ```bash
 cd /path/to/Edit-Banana
 mkdir -p models
-cp sam3_src/assets/bpe_simple_vocab_16e6.txt.gz models/
+mkdir -p models/sam3
+cp sam3_src/assets/bpe_simple_vocab_16e6.txt.gz models/sam3/
 ```
 
 If BPE is not under `assets/`, search for it:
@@ -60,7 +62,7 @@ If BPE is not under `assets/`, search for it:
 find sam3_src -name "bpe*.gz"
 ```
 
-Copy the found file to `models/bpe_simple_vocab_16e6.txt.gz` (or keep its path and set `bpe_path` in config accordingly).
+Copy the found file to `models/sam3/bpe_simple_vocab_16e6.txt.gz` (or keep its path and set `bpe_path` in config accordingly).
 
 ---
 
@@ -85,7 +87,7 @@ print('Downloaded to', path)
 "
 ```
 
-Weights will be under `models/sam3_ms/`. **This project loads the checkpoint with `torch.load`; use a `sam3.pt` file** (if the repo only provides `model.safetensors`, convert it or obtain a `.pt` from another source). Set `checkpoint_path: "models/sam3_ms/sam3.pt"` in `config.yaml`. If the ModelScope repo includes a BPE file (e.g. `bpe_simple_vocab_16e6.txt.gz`), it will also be under `models/sam3_ms/`; point `bpe_path` to it or copy to `models/bpe_simple_vocab_16e6.txt.gz`.
+Weights will be under `models/sam3_ms/`. **This project loads the checkpoint with `torch.load`; use a `sam3.pt` file** (if the repo only provides `model.safetensors`, convert it or obtain a `.pt` from another source). Set `checkpoint_path: "models/sam3_ms/sam3.pt"` in `config.yaml`. If the ModelScope repo includes a BPE file (e.g. `bpe_simple_vocab_16e6.txt.gz`), it will also be under `models/sam3_ms/`; point `bpe_path` to it or copy to `models/sam3/bpe_simple_vocab_16e6.txt.gz`.
 
 **Or download manually in the browser:**
 
@@ -128,7 +130,7 @@ sam3:
   # Weights: must be a .pt file (e.g. sam3.pt)
   checkpoint_path: "models/sam3_ms/sam3.pt"
   # BPE: path from the copy step above
-  bpe_path: "models/bpe_simple_vocab_16e6.txt.gz"
+  bpe_path: "models/sam3/bpe_simple_vocab_16e6.txt.gz"
   score_threshold: 0.5
   epsilon_factor: 0.02
   min_area: 100

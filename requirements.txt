@@ -4,13 +4,18 @@ setuptools<81
 einops
 pycocotools
 psutil
-# PaddlePaddle 2.x requires protobuf<=3.20.2 on Windows.
-protobuf>=3.1.0,<=3.20.2; platform_system == "Windows"
+# PaddleOCR 3.x/PP-OCRv6 and ONNX Runtime work with modern protobuf.
+protobuf>=4.25.8
 pyyaml
-opencv-python-headless
-numpy
+# Keep the scientific/CV stack on NumPy 2.x. New OpenCV, SciPy and tifffile
+# releases require NumPy >=2, so leaving NumPy unconstrained can let pip keep an
+# incompatible old NumPy 1.26.x in existing environments.
+numpy>=2.1,<2.8
+opencv-python-headless>=4.13.0.92,<5.0.0
+scipy>=1.18.0,<2.0.0
+tifffile>=2026.6.1
 Pillow
-scikit-image
+scikit-image>=0.26.0,<1.0.0
 requests
 fastapi
 uvicorn[standard]
@@ -18,14 +23,16 @@ uvicorn[standard]
 # Text OCR (local, default)
 pytesseract
 
-# Optional: PaddleOCR (better for mixed Chinese/English text). Set ocr.engine: "paddleocr" in config.
-# Use compatible PaddleOCR 2.x + PaddlePaddle 2.x:
-#   pip install "paddleocr>=2.8.0,<3.0.0" "paddlepaddle>=2.6.1,<3.0.0"
+# PaddleOCR / PP-OCRv6 (better for mixed Chinese/English text). Set ocr.engine: "paddleocr" in config.
+paddleocr>=3.7.0,<4.0.0
+paddlepaddle>=3.0.0,<4.0.0
 
 # Optional: formula recognition (LaTeX). Install for full text pipeline.
-# pip install pix2text   # onnxruntime may conflict with PaddlePaddle 2.x protobuf pins
-# Optional: background removal (RMBG). Install for IconPictureProcessor.
-# Latest onnxruntime may require protobuf>=4.25.8, conflicting with PaddlePaddle 2.x on Windows.
-# Prefer a separate env for RMBG/ONNX Runtime if you also use PaddleOCR 2.x in this env.
-# pip install onnxruntime  # or onnxruntime-gpu
-# PyTorch and SAM3: install separately; see README (PyTorch + SAM3 source).
+pix2text
+
+# RMBG background removal and setup script dependencies.
+# Use onnxruntime-gpu instead if your deployment needs GPU ONNX Runtime.
+onnxruntime
+modelscope
+
+# PyTorch and SAM3 are installed separately; see README and scripts/setup_sam3.sh.
