@@ -11,10 +11,10 @@ triton-windows; platform_system == "Windows"
 # PaddleOCR 3.x/PP-OCRv6 and ONNX Runtime work with modern protobuf.
 protobuf>=4.25.8
 pyyaml
-# Keep the scientific/CV stack on NumPy 1.26.x for PaddlePaddle/Windows compatibility.
-# OpenCV 4.13+, SciPy 1.18+ and tifffile 2026+ require NumPy 2.x, so pin older
-# compatible releases when the project environment stays on NumPy 1.26.4.
-numpy>=1.26.4,<2.0.0
+# Keep NumPy pinned below 2.x: SAM3 requires numpy<2 and PaddleOCR/PaddleX is
+# compatible with 1.26.x. Use --force-reinstall if an existing env already has
+# NumPy 2.x installed.
+numpy==1.26.4
 opencv-python==4.11.0.86
 opencv-python-headless==4.11.0.86
 scipy>=1.13.1,<1.18.0

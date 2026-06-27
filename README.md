@@ -265,6 +265,7 @@ Edit `config.yaml` to ensure `sam3.checkpoint_path` and `sam3.bpe_path` match yo
 - "Model file not found at ...rmbg/...": RMBG is optional. Enable by downloading via script.
 - "PaddleOCR inference failed...": Use PP-OCRv6-compatible `paddleocr>=3.7.0` with `paddlepaddle>=3.0.0,<3.3.0`, or fallback to Tesseract.
 - Windows `WinError 5` while installing/upgrading Pillow/PIL (for example `_imaging.cp312-win_amd64.pyd`): close any running Python/IDE/Jupyter process that imported Pillow, then reinstall from an activated virtualenv with `python -m pip install --upgrade --force-reinstall --no-cache-dir Pillow`. If the file remains locked, delete the stale `~il`/`PIL` folders under `.venv/Lib/site-packages` after closing Python processes and rerun the command.
+- NumPy conflict with PaddleX/SAM3 (for example NumPy 2.x already installed): reinstall the pinned stack with `python -m pip install --upgrade --force-reinstall -r requirements.txt` or at minimum `python -m pip install --force-reinstall "numpy==1.26.4"`. SAM3 requires `numpy<2`.
 
 </details>
 
