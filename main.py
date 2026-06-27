@@ -81,6 +81,7 @@ def load_config() -> dict:
                     'ocr_version': 'PP-OCRv6',
                     'text_detection_model_name': 'PP-OCRv6_medium_det',
                     'text_recognition_model_name': 'PP-OCRv6_medium_rec',
+                    'textline_orientation_model_name': 'PP-LCNet_x1_0_textline_ori',
                     'text_det_limit_side_len': 64,
                     'text_det_limit_type': 'min',
                     'text_det_thresh': 0.3,

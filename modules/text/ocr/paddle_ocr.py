@@ -43,6 +43,7 @@ class PaddleOCRAdapter:
         textline_orientation_model_dir: str = None,
         text_detection_model_name: str = "PP-OCRv6_medium_det",
         text_recognition_model_name: str = "PP-OCRv6_medium_rec",
+        textline_orientation_model_name: str = None,
         ocr_version: str = "PP-OCRv6",
         text_det_limit_side_len: int = 64,
         text_det_limit_type: str = "min",
@@ -68,9 +69,15 @@ class PaddleOCRAdapter:
         textline_orientation_model_dir = (
             textline_orientation_model_dir or cls_model_dir or self._find_local_model_dir(model_dir, "cls")
         )
+        textline_orientation_model_name = (
+            textline_orientation_model_name
+            or self._infer_textline_orientation_model_name(textline_orientation_model_dir)
+            or "PP-LCNet_x1_0_textline_ori"
+        )
         self.model_debug_info = {
             "det_model_name": text_detection_model_name,
             "rec_model_name": text_recognition_model_name,
+            "textline_orientation_model_name": textline_orientation_model_name,
             "textline_orientation_enabled": use_angle_cls,
             "det_model_dir": text_detection_model_dir,
             "rec_model_dir": text_recognition_model_dir,
@@ -89,6 +96,7 @@ class PaddleOCRAdapter:
             "ocr_version": ocr_version,
             "text_detection_model_name": text_detection_model_name,
             "text_recognition_model_name": text_recognition_model_name,
+            "textline_orientation_model_name": textline_orientation_model_name,
             "use_doc_orientation_classify": False,
             "use_doc_unwarping": False,
             "use_textline_orientation": use_angle_cls,
@@ -174,6 +182,20 @@ class PaddleOCRAdapter:
 
         matches = sorted(root.glob(f"*_{kind}_infer"))
         return str(matches[0]) if matches else None
+
+    @staticmethod
+    def _infer_textline_orientation_model_name(model_dir: str) -> str:
+        """Infer PaddleOCR 3.x textline orientation model name from a local model directory."""
+        if not model_dir:
+            return None
+        name = Path(model_dir).name
+        known_names = {
+            "pp-lcnet_x1_0_textline_ori": "PP-LCNet_x1_0_textline_ori",
+            "pp_lcnet_x1_0_textline_ori": "PP-LCNet_x1_0_textline_ori",
+            "pp-lcnet_x0_25_textline_ori": "PP-LCNet_x0_25_textline_ori",
+            "pp_lcnet_x0_25_textline_ori": "PP-LCNet_x0_25_textline_ori",
+        }
+        return known_names.get(name.lower(), name)
 
     @staticmethod
     def _require_local_model_dir(model_dir: str, kind: str) -> None:

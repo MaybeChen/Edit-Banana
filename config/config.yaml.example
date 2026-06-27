@@ -49,6 +49,8 @@ ocr:
     ocr_version: "PP-OCRv6"
     text_detection_model_name: "PP-OCRv6_medium_det"
     text_recognition_model_name: "PP-OCRv6_medium_rec"
+    # Only used when use_angle_cls is true. Must match textline_orientation_model_dir.
+    textline_orientation_model_name: "PP-LCNet_x1_0_textline_ori"
     # Match PaddleOCR web demo detector settings for small diagram labels.
     text_det_limit_side_len: 64
     text_det_limit_type: "min"
