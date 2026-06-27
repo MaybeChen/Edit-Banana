@@ -172,6 +172,14 @@ class PaddleOCRAdapter:
             return "not installed"
 
     @staticmethod
+    def _first_present(*values: Any, default: Any = None) -> Any:
+        """Return the first non-None value without truth-testing arrays."""
+        for value in values:
+            if value is not None:
+                return value
+        return default
+
+    @staticmethod
     def _find_local_model_dir(model_dir: str, kind: str) -> str:
         """Find a PaddleOCR 2.x inference model directory under a local model root."""
         if not model_dir:
@@ -236,20 +244,22 @@ class PaddleOCRAdapter:
         """Parse PaddleOCR 2.x or 3.x result into list of TextBlock."""
         text_blocks: List[TextBlock] = []
 
-        if not result:
+        if result is None:
             return text_blocks
 
         # PaddleOCR web/API shape: {"ocrResults": [{"prunedResult": {...}}]}
         if isinstance(result, dict) and "ocrResults" in result:
             result = [
-                item.get("prunedResult") or item.get("pruned_result") or item
+                self._first_present(item.get("prunedResult"), item.get("pruned_result"), item)
                 for item in (result.get("ocrResults") or [])
             ]
 
         # Normalize to list (single image may return one object or dict key 0)
         if not isinstance(result, list):
             if isinstance(result, dict):
-                first_val = result.get(0) or (list(result.values())[0] if result else None)
+                first_val = result.get(0)
+                if first_val is None:
+                    first_val = list(result.values())[0] if result else None
                 if first_val is None:
                     return text_blocks
                 result = [first_val]
@@ -261,16 +271,16 @@ class PaddleOCRAdapter:
             first = result[0]
             get = getattr(first, "get", None) if not isinstance(first, dict) else first.get
             if get is not None and callable(get):
-                nested = get("prunedResult") or get("pruned_result")
+                nested = self._first_present(get("prunedResult"), get("pruned_result"))
                 if nested is not None:
                     first = nested
                     result[0] = nested
                     get = getattr(first, "get", None) if not isinstance(first, dict) else first.get
             if get is not None and callable(get):
-                rec_polys = get("rec_polys") or get("dt_polys") or []
-                rec_texts = get("rec_texts") or []
-                rec_scores = get("rec_scores") or []
-                if isinstance(rec_texts, (list, tuple)) and (
+                rec_polys = self._first_present(get("rec_polys"), get("dt_polys"), default=[])
+                rec_texts = self._first_present(get("rec_texts"), default=[])
+                rec_scores = self._first_present(get("rec_scores"), default=[])
+                if hasattr(rec_texts, "__len__") and not isinstance(rec_texts, (str, bytes)) and (
                     isinstance(rec_polys, (list, tuple))
                     or (hasattr(rec_polys, "__iter__") and not isinstance(rec_polys, (str, bytes)))
                 ):
@@ -281,7 +291,7 @@ class PaddleOCRAdapter:
                         text = (text or "").strip()
                         conf = (
                             float(rec_scores[i])
-                            if i < len(rec_scores) and rec_scores
+                            if hasattr(rec_scores, "__len__") and i < len(rec_scores)
                             else 1.0
                         )
                         if not text or conf < self.min_confidence:
@@ -356,7 +366,7 @@ class PaddleOCRAdapter:
         print(f"[PaddleOCRAdapter] raw result type: {type(result).__name__}")
         if isinstance(result, dict) and "ocrResults" in result:
             candidates = [
-                item.get("prunedResult") or item.get("pruned_result") or item
+                self._first_present(item.get("prunedResult"), item.get("pruned_result"), item)
                 for item in (result.get("ocrResults") or [])
             ]
         else:
@@ -366,16 +376,16 @@ class PaddleOCRAdapter:
             if get is None or not callable(get):
                 print(f"[PaddleOCRAdapter] raw[{idx}] type={type(item).__name__}")
                 continue
-            nested = get("prunedResult") or get("pruned_result") or item
+            nested = self._first_present(get("prunedResult"), get("pruned_result"), item)
             nested_get = getattr(nested, "get", None) if not isinstance(nested, dict) else nested.get
             if nested_get is None or not callable(nested_get):
                 print(f"[PaddleOCRAdapter] raw[{idx}] nested type={type(nested).__name__}")
                 continue
-            texts = nested_get("rec_texts") or []
-            scores = nested_get("rec_scores") or []
-            polys = nested_get("rec_polys") or nested_get("dt_polys") or []
-            boxes = nested_get("rec_boxes") or []
-            angles = nested_get("textline_orientation_angles") or []
+            texts = self._first_present(nested_get("rec_texts"), default=[])
+            scores = self._first_present(nested_get("rec_scores"), default=[])
+            polys = self._first_present(nested_get("rec_polys"), nested_get("dt_polys"), default=[])
+            boxes = self._first_present(nested_get("rec_boxes"), default=[])
+            angles = self._first_present(nested_get("textline_orientation_angles"), default=[])
             print(
                 f"[PaddleOCRAdapter] raw[{idx}] det_model={self.model_debug_info.get('det_model_name')} "
                 f"det_polys={len(polys)} det_boxes={len(boxes)} dt_polys={list(polys)[:20]} rec_boxes={list(boxes)[:20]}"
