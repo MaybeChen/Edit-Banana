@@ -45,6 +45,10 @@ ocr:
     ocr_version: "PP-OCRv6"
     text_detection_model_name: "PP-OCRv6_medium_det"
     text_recognition_model_name: "PP-OCRv6_medium_rec"
+    # Upscale before OCR to improve small Chinese label detection; coordinates are scaled back.
+    scale: 2.0
+    # Drop noisy icon-like false positives with very low recognition confidence.
+    min_confidence: 0.30
     # Local model root. Auto-detects *_det_infer, *_rec_infer, *_cls_infer under this directory.
     model_dir: "models/paddleocr"
     # Or set explicit PaddleOCR 3.x model directories:

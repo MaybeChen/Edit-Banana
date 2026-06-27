@@ -14,6 +14,7 @@ from .base import TextBlock, OCRResult
 
 # Disable oneDNN to avoid ConvertPirAttribute2RuntimeAttribute error on some CPUs
 import os
+import tempfile
 os.environ.setdefault("FLAGS_use_mkldnn", "0")
 
 try:
@@ -44,12 +45,16 @@ class PaddleOCRAdapter:
         ocr_version: str = "PP-OCRv6",
         device: str = None,
         engine: str = None,
+        scale: float = 2.0,
+        min_confidence: float = 0.30,
         allow_download: bool = True,
     ):
         if PaddleOCR is None:
             raise ImportError(
                 "Install PaddleOCR: pip install paddleocr paddlepaddle (or paddlepaddle-gpu)"
             )
+        self.scale = max(float(scale or 1.0), 1.0)
+        self.min_confidence = max(float(min_confidence or 0.0), 0.0)
         text_detection_model_dir = text_detection_model_dir or det_model_dir or self._find_local_model_dir(model_dir, "det")
         text_recognition_model_dir = text_recognition_model_dir or rec_model_dir or self._find_local_model_dir(model_dir, "rec")
         textline_orientation_model_dir = (
@@ -134,7 +139,7 @@ class PaddleOCRAdapter:
                 f"PaddleOCR {kind} model directory is incomplete: {path}. Missing: {', '.join(missing)}"
             )
 
-    def _parse_result(self, result: Any) -> List[TextBlock]:
+    def _parse_result(self, result: Any, scale: float = 1.0) -> List[TextBlock]:
         """Parse PaddleOCR 2.x or 3.x result into list of TextBlock."""
         text_blocks: List[TextBlock] = []
 
@@ -173,11 +178,11 @@ class PaddleOCRAdapter:
                             if i < len(rec_scores) and rec_scores
                             else 1.0
                         )
-                        if not text:
+                        if not text or conf < self.min_confidence:
                             continue
                         try:
                             polygon: List[Tuple[float, float]] = [
-                                (float(p[0]), float(p[1]))
+                                (float(p[0]) / scale, float(p[1]) / scale)
                                 for p in (poly if hasattr(poly, "__iter__") else [])
                             ]
                         except (IndexError, TypeError, KeyError):
@@ -221,10 +226,10 @@ class PaddleOCRAdapter:
             else:
                 text = (text_part or "").strip()
                 conf = 1.0
-            if not text:
+            if not text or conf < self.min_confidence:
                 continue
             try:
-                polygon = [(float(p[0]), float(p[1])) for p in box]
+                polygon = [(float(p[0]) / scale, float(p[1]) / scale) for p in box]
             except (IndexError, TypeError, KeyError):
                 continue
             ys = [p[1] for p in polygon]
@@ -250,18 +255,35 @@ class PaddleOCRAdapter:
             img = img.convert("RGB")
         width, height = img.size
 
-        # PaddleOCR 3.x / PP-OCRv6 uses predict(); keep ocr() fallback for older installs.
-        if hasattr(self._engine, "predict"):
-            result = self._engine.predict(str(image_path))
-        else:
-            try:
-                result = self._engine.ocr(str(image_path), cls=True)
-            except TypeError:
-                result = self._engine.ocr(str(image_path))
+        ocr_image_path = str(image_path)
+        tmp_path = None
+        if self.scale > 1.0:
+            scaled = img.resize(
+                (int(width * self.scale), int(height * self.scale)),
+                Image.Resampling.LANCZOS,
+            )
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp_path = tmp.name
+            tmp.close()
+            scaled.save(tmp_path)
+            ocr_image_path = tmp_path
+
+        try:
+            # PaddleOCR 3.x / PP-OCRv6 uses predict(); keep ocr() fallback for older installs.
+            if hasattr(self._engine, "predict"):
+                result = self._engine.predict(ocr_image_path)
+            else:
+                try:
+                    result = self._engine.ocr(ocr_image_path, cls=True)
+                except TypeError:
+                    result = self._engine.ocr(ocr_image_path)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
         # PaddleOCR 3.x (PaddleX): list of dict-like OCRResult with rec_polys, rec_texts, rec_scores
         # PaddleOCR 2.x: [ [box, (text, conf)], ... ] or [[line1,...]]
-        text_blocks = self._parse_result(result)
+        text_blocks = self._parse_result(result, scale=self.scale)
 
         return OCRResult(
             image_width=width,
