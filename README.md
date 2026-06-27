@@ -226,7 +226,7 @@ Verify with:
 - PaddleOCR (Alternative/Better for mixed text): use PP-OCRv6 via PaddleOCR 3.7+.
 
   ```bash
-  pip install "paddleocr>=3.7.0,<4.0.0" "paddlepaddle>=3.0.0,<4.0.0".
+  pip install "paddleocr>=3.7.0,<4.0.0" "paddlepaddle>=3.0.0,<3.3.0".
   ```
 
 - Formula (Pix2Text): 
@@ -263,7 +263,7 @@ Edit `config.yaml` to ensure `sam3.checkpoint_path` and `sam3.bpe_path` match yo
 
 - "no kernel image is available...": GPU arch mismatch. Upgrade PyTorch or set `sam3.device: "cpu"`.
 - "Model file not found at ...rmbg/...": RMBG is optional. Enable by downloading via script.
-- "PaddleOCR inference failed...": Use PP-OCRv6-compatible `paddleocr>=3.7.0` with `paddlepaddle>=3.0.0`, or fallback to Tesseract.
+- "PaddleOCR inference failed...": Use PP-OCRv6-compatible `paddleocr>=3.7.0` with `paddlepaddle>=3.0.0,<3.3.0`, or fallback to Tesseract.
 
 </details>
 

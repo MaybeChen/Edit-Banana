@@ -2,7 +2,7 @@
 PaddleOCR adapter (optional).
 
 Same interface as LocalOCR: analyze_image(image_path) -> OCRResult.
-Recommended for PP-OCRv6: paddleocr>=3.7.0 + paddlepaddle>=3.0.0.
+Recommended for PP-OCRv6: paddleocr>=3.7.0 + paddlepaddle>=3.0.0,<3.3.0.
 """
 
 from pathlib import Path
@@ -13,10 +13,14 @@ from PIL import Image
 
 from .base import TextBlock, OCRResult
 
-# Disable oneDNN to avoid ConvertPirAttribute2RuntimeAttribute error on some CPUs
 import os
 import tempfile
+# Disable oneDNN/MKLDNN before importing PaddleOCR/PaddleX. PaddlePaddle 3.3.x
+# can crash on CPU with ConvertPirAttribute2RuntimeAttribute in oneDNN; keeping
+# these flags off avoids the fast path that triggers the PIR conversion bug.
+os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
 os.environ.setdefault("FLAGS_use_mkldnn", "0")
+os.environ.setdefault("FLAGS_use_onednn", "0")
 
 try:
     from paddleocr import PaddleOCR
@@ -130,7 +134,7 @@ class PaddleOCRAdapter:
                     "were NOT used. Install compatible versions or explicitly set allow_legacy_fallback: true "
                     "if you intentionally want PaddleOCR 2.x behavior.\n"
                     "Expected install:\n"
-                    "  pip install \"paddleocr>=3.7.0,<4.0.0\" \"paddlepaddle>=3.0.0,<4.0.0\"\n"
+                    "  pip install \"paddleocr>=3.7.0,<4.0.0\" \"paddlepaddle>=3.0.0,<3.3.0\"\n"
                     f"Detected paddleocr={self.model_debug_info.get('paddleocr_version')}, "
                     f"paddlepaddle={self.model_debug_info.get('paddlepaddle_version')}\n"
                     f"Original TypeError: {e}"
@@ -154,7 +158,7 @@ class PaddleOCRAdapter:
                 raise RuntimeError(
                     "PaddleOCR/PaddlePaddle version mismatch. Install PP-OCRv6-compatible packages:\n"
                     "  pip uninstall paddleocr paddlepaddle paddlepaddle-gpu paddlex -y\n"
-                    "  pip install \"paddleocr>=3.7.0,<4.0.0\" \"paddlepaddle>=3.0.0,<4.0.0\"   # CPU\n"
+                    "  pip install \"paddleocr>=3.7.0,<4.0.0\" \"paddlepaddle>=3.0.0,<3.3.0\"   # CPU\n"
                     "  # GPU: install the matching paddlepaddle-gpu 3.x build, then paddleocr>=3.7.0\n"
                     "See README Optional PaddleOCR section."
                 ) from e

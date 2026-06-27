@@ -30,7 +30,7 @@ pytesseract
 
 # PaddleOCR / PP-OCRv6 (better for mixed Chinese/English text). Set ocr.engine: "paddleocr" in config.
 paddleocr>=3.7.0,<4.0.0
-paddlepaddle>=3.0.0,<4.0.0
+paddlepaddle>=3.0.0,<3.3.0
 
 # Optional: formula recognition (LaTeX). Install for full text pipeline.
 pix2text

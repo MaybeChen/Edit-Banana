@@ -220,7 +220,7 @@ pip install -r requirements.txt
 
 - PaddleOCR (替代方案/对于混合文本效果更好)：使用 PaddleOCR 3.7+ 的 PP-OCRv6。
   ```bash
-  pip install "paddleocr>=3.7.0,<4.0.0" "paddlepaddle>=3.0.0,<4.0.0"
+  pip install "paddleocr>=3.7.0,<4.0.0" "paddlepaddle>=3.0.0,<3.3.0"
   ```
 - 公式 (Pix2Text)：
   ```bash
@@ -255,7 +255,7 @@ pip install -r requirements.txt
 - "mat1 and mat2 must have the same dtype"：CPU 模式下 SAM3 内部可能产生 BF16 输入但线性层权重为 Float；项目会在 CPU 模式下安装兼容 hook 对齐 dtype，若仍出现请优先确认已更新到最新代码。
 - "No module named 'triton'"：SAM3 的 PyTorch 注意力栈可能需要 Triton。根目录 `requirements.txt` 已按平台加入依赖（Linux 安装 `triton`，Windows 安装 `triton-windows`）；如果 Windows 原生环境与 `triton-windows` 的 PyTorch/CUDA/Python 版本不匹配，建议改用 WSL/Linux 运行 SAM3。
 - "Model file not found at ...rmbg/..."：RMBG 模块是可选的，如果你需要，请通过脚本下载启用。
-- "PaddleOCR inference failed..."：请使用支持 PP-OCRv6 的 `paddleocr>=3.7.0` 与 `paddlepaddle>=3.0.0`，或回退到使用 Tesseract 识别。
+- "PaddleOCR inference failed..."：请使用支持 PP-OCRv6 的 `paddleocr>=3.7.0` 与 `paddlepaddle>=3.0.0,<3.3.0`，或回退到使用 Tesseract 识别。
 </details>
 
 ---
