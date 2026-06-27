@@ -184,11 +184,26 @@ class PaddleOCRAdapter:
                 f"or put a *_{kind}_infer directory under ocr.paddleocr.model_dir."
             )
         path = Path(model_dir)
-        required = ["inference.pdmodel", "inference.pdiparams"]
-        missing = [name for name in required if not (path / name).exists()]
-        if missing:
+        if not path.exists() or not path.is_dir():
+            raise FileNotFoundError(f"PaddleOCR {kind} model directory does not exist: {path}")
+
+        # PaddleOCR 2.x inference exports usually contain inference.pdmodel +
+        # inference.pdiparams. PaddleOCR 3.x/PaddleX official models may use
+        # inference.json + inference.pdiparams instead. Accept both so PP-OCRv6
+        # local model directories are not incorrectly rejected as incomplete.
+        model_files = {child.name for child in path.iterdir() if child.is_file()}
+        valid_model_pairs = [
+            ("inference.pdmodel", "inference.pdiparams"),
+            ("inference.json", "inference.pdiparams"),
+            ("model.pdmodel", "model.pdiparams"),
+            ("model.json", "model.pdiparams"),
+        ]
+        if not any(all(name in model_files for name in pair) for pair in valid_model_pairs):
+            expected = " or ".join(" + ".join(pair) for pair in valid_model_pairs)
+            found = ", ".join(sorted(model_files)) or "no files"
             raise FileNotFoundError(
-                f"PaddleOCR {kind} model directory is incomplete: {path}. Missing: {', '.join(missing)}"
+                f"PaddleOCR {kind} model directory is incomplete: {path}. "
+                f"Expected one of: {expected}. Found: {found}"
             )
 
     def _parse_result(self, result: Any, scale: float = 1.0) -> List[TextBlock]:
