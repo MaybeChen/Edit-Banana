@@ -31,7 +31,7 @@ class PaddleOCRAdapter:
 
     def __init__(
         self,
-        use_angle_cls: bool = True,
+        use_angle_cls: bool = False,
         lang: str = "ch",
         model_dir: str = None,
         det_model_dir: str = None,
@@ -43,9 +43,15 @@ class PaddleOCRAdapter:
         text_detection_model_name: str = "PP-OCRv6_medium_det",
         text_recognition_model_name: str = "PP-OCRv6_medium_rec",
         ocr_version: str = "PP-OCRv6",
+        text_det_limit_side_len: int = 64,
+        text_det_limit_type: str = "min",
+        text_det_thresh: float = 0.3,
+        text_det_box_thresh: float = 0.6,
+        text_det_unclip_ratio: float = 1.5,
+        text_rec_score_thresh: float = 0.0,
         device: str = None,
         engine: str = None,
-        scale: float = 2.0,
+        scale: float = 1.0,
         min_confidence: float = 0.30,
         allow_download: bool = True,
     ):
@@ -74,6 +80,12 @@ class PaddleOCRAdapter:
             "use_doc_orientation_classify": False,
             "use_doc_unwarping": False,
             "use_textline_orientation": use_angle_cls,
+            "text_det_limit_side_len": text_det_limit_side_len,
+            "text_det_limit_type": text_det_limit_type,
+            "text_det_thresh": text_det_thresh,
+            "text_det_box_thresh": text_det_box_thresh,
+            "text_det_unclip_ratio": text_det_unclip_ratio,
+            "text_rec_score_thresh": text_rec_score_thresh,
         }
         if device:
             kwargs["device"] = device
@@ -146,6 +158,13 @@ class PaddleOCRAdapter:
         if not result:
             return text_blocks
 
+        # PaddleOCR web/API shape: {"ocrResults": [{"prunedResult": {...}}]}
+        if isinstance(result, dict) and "ocrResults" in result:
+            result = [
+                item.get("prunedResult") or item.get("pruned_result") or item
+                for item in (result.get("ocrResults") or [])
+            ]
+
         # Normalize to list (single image may return one object or dict key 0)
         if not isinstance(result, list):
             if isinstance(result, dict):
@@ -160,6 +179,12 @@ class PaddleOCRAdapter:
         if isinstance(result, list) and len(result) > 0:
             first = result[0]
             get = getattr(first, "get", None) if not isinstance(first, dict) else first.get
+            if get is not None and callable(get):
+                nested = get("prunedResult") or get("pruned_result")
+                if nested is not None:
+                    first = nested
+                    result[0] = nested
+                    get = getattr(first, "get", None) if not isinstance(first, dict) else first.get
             if get is not None and callable(get):
                 rec_polys = get("rec_polys") or get("dt_polys") or []
                 rec_texts = get("rec_texts") or []
