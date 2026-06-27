@@ -91,6 +91,8 @@ class PaddleOCRAdapter:
             kwargs["device"] = device
         if engine:
             kwargs["engine"] = engine
+        debug_kwargs = {k: v for k, v in kwargs.items() if k not in {"text_detection_model_dir", "text_recognition_model_dir", "textline_orientation_model_dir"}}
+        print(f"[PaddleOCRAdapter] init kwargs: {debug_kwargs}; scale={self.scale}; min_confidence={self.min_confidence}")
         if text_detection_model_dir:
             kwargs["text_detection_model_dir"] = text_detection_model_dir
         if text_recognition_model_dir:
@@ -270,6 +272,34 @@ class PaddleOCRAdapter:
             )
         return text_blocks
 
+    def _print_raw_result_summary(self, result: Any) -> None:
+        """Print a concise summary of raw PaddleOCR output shape and recognized texts."""
+        print(f"[PaddleOCRAdapter] raw result type: {type(result).__name__}")
+        if isinstance(result, dict) and "ocrResults" in result:
+            candidates = [
+                item.get("prunedResult") or item.get("pruned_result") or item
+                for item in (result.get("ocrResults") or [])
+            ]
+        else:
+            candidates = result if isinstance(result, list) else [result]
+        for idx, item in enumerate(candidates[:3]):
+            get = getattr(item, "get", None) if not isinstance(item, dict) else item.get
+            if get is None or not callable(get):
+                print(f"[PaddleOCRAdapter] raw[{idx}] type={type(item).__name__}")
+                continue
+            nested = get("prunedResult") or get("pruned_result") or item
+            nested_get = getattr(nested, "get", None) if not isinstance(nested, dict) else nested.get
+            if nested_get is None or not callable(nested_get):
+                print(f"[PaddleOCRAdapter] raw[{idx}] nested type={type(nested).__name__}")
+                continue
+            texts = nested_get("rec_texts") or []
+            scores = nested_get("rec_scores") or []
+            polys = nested_get("rec_polys") or nested_get("dt_polys") or []
+            print(
+                f"[PaddleOCRAdapter] raw[{idx}] texts={len(texts)} polys={len(polys)} "
+                f"scores={len(scores)} rec_texts={list(texts)[:20]} rec_scores={list(scores)[:20]}"
+            )
+
     def analyze_image(self, image_path: str) -> OCRResult:
         image_path = Path(image_path)
         if not image_path.exists():
@@ -306,9 +336,12 @@ class PaddleOCRAdapter:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+        self._print_raw_result_summary(result)
+
         # PaddleOCR 3.x (PaddleX): list of dict-like OCRResult with rec_polys, rec_texts, rec_scores
         # PaddleOCR 2.x: [ [box, (text, conf)], ... ] or [[line1,...]]
         text_blocks = self._parse_result(result, scale=self.scale)
+        print(f"[PaddleOCRAdapter] parsed text blocks: {len(text_blocks)}")
 
         return OCRResult(
             image_width=width,

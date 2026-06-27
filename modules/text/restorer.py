@@ -346,6 +346,7 @@ class TextRestorer:
                 raise
         self.timing["text_ocr"] = time.time() - text_start
         print(f"   {len(ocr_result.text_blocks)} text blocks ({self.timing['text_ocr']:.2f}s)")
+        self._print_ocr_debug_blocks(ocr_result, stage="raw")
 
         formula_result = None
 
@@ -441,6 +442,7 @@ class TextRestorer:
 
             self.timing["pix2text_ocr"] = time.time() - refine_start
             print(f"   Refined {fixed_count} formula blocks ({self.timing['pix2text_ocr']:.2f}s)")
+            self._print_ocr_debug_blocks(ocr_result, stage="after_formula")
 
             formula_result = None
 
@@ -450,6 +452,27 @@ class TextRestorer:
             print("\nSkipping formula")
 
         return ocr_result, formula_result
+
+    def _print_ocr_debug_blocks(self, ocr_result, stage: str = "raw") -> None:
+        """Print detailed OCR blocks for debugging recognition differences."""
+        blocks = getattr(ocr_result, "text_blocks", []) or []
+        print(f"   OCR debug [{stage}]: {len(blocks)} block(s)")
+        for idx, block in enumerate(blocks, start=1):
+            polygon = getattr(block, "polygon", []) or []
+            if polygon:
+                xs = [float(p[0]) for p in polygon]
+                ys = [float(p[1]) for p in polygon]
+                bbox = [round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1)]
+            else:
+                bbox = None
+            confidence = getattr(block, "confidence", None)
+            conf_text = f" conf={confidence:.4f}" if isinstance(confidence, (int, float)) else ""
+            font_size = getattr(block, "font_size_px", None)
+            font_text = f" font_px={font_size:.1f}" if isinstance(font_size, (int, float)) else ""
+            print(
+                f"      #{idx}: text={getattr(block, 'text', '')!r}"
+                f"{conf_text}{font_text} bbox={bbox} polygon={polygon}"
+            )
 
     def _should_refine_block(self, text: str) -> bool:
         """Whether to try refinement."""
