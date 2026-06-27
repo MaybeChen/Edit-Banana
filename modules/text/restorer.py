@@ -9,11 +9,12 @@ Usage:
     xml_string = restorer.process("input.png")
 """
 
+import json
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from .ocr.local_ocr import LocalOCR
 from .coord_processor import CoordProcessor
@@ -49,6 +50,8 @@ class TextRestorer:
 
         self._layout_ocr = None
         self._pix2text_ocr = None
+        self.last_raw_ocr_blocks: List[Dict[str, Any]] = []
+        self.last_text_blocks: List[Dict[str, Any]] = []
 
         self.font_size_processor = FontSizeProcessor()
         self.font_family_processor = FontFamilyProcessor()
@@ -146,6 +149,8 @@ class TextRestorer:
         # Step 1: OCR
         ocr_result, formula_result = self._run_ocr(str(image_path))
 
+        self.last_raw_ocr_blocks = self._ocr_result_to_dict_list(ocr_result)
+
         # Step 2: Formula (layout OCR + Pix2Text)
         processing_start = time.time()
 
@@ -189,9 +194,66 @@ class TextRestorer:
         
         self.timing["processing"] = time.time() - processing_start
         self.timing["total"] = time.time() - total_start
+        self.last_text_blocks = text_blocks
         
         return text_blocks
     
+    def save_ocr_artifacts(self, output_dir: str, image_path: str) -> str:
+        """Save OCR recognition results as an intermediate JSON artifact."""
+        output_path = Path(output_dir) / "ocr_result.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "image_path": str(image_path),
+            "ocr_engine": self._ocr_engine,
+            "formula_engine": self.formula_engine,
+            "timing": self.timing,
+            "raw_ocr_blocks": self.last_raw_ocr_blocks,
+            "processed_text_blocks": self.last_text_blocks,
+            "statistics": {
+                "raw_count": len(self.last_raw_ocr_blocks),
+                "processed_count": len(self.last_text_blocks),
+            },
+        }
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return str(output_path)
+
+    def save_ocr_overlay(self, output_dir: str, image_path: str) -> str:
+        """Draw OCR recognition boxes and text labels on the original image."""
+        output_path = Path(output_dir) / "ocr_overlay.png"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with Image.open(image_path).convert("RGB") as img:
+            overlay = img.copy()
+        draw = ImageDraw.Draw(overlay)
+
+        for idx, block in enumerate(self.last_text_blocks or self.last_raw_ocr_blocks, start=1):
+            polygon = block.get("polygon") or []
+            if polygon and len(polygon) >= 3:
+                points = [(float(x), float(y)) for x, y in polygon]
+                draw.line(points + [points[0]], fill=(255, 0, 0), width=2)
+                label_x = min(p[0] for p in points)
+                label_y = max(0, min(p[1] for p in points) - 14)
+            else:
+                geo = block.get("geometry", {})
+                x = float(geo.get("x", 0))
+                y = float(geo.get("y", 0))
+                w = float(geo.get("width", 0))
+                h = float(geo.get("height", 0))
+                if w <= 0 or h <= 0:
+                    continue
+                draw.rectangle([x, y, x + w, y + h], outline=(255, 0, 0), width=2)
+                label_x = x
+                label_y = max(0, y - 14)
+
+            text = str(block.get("text", ""))[:24]
+            confidence = block.get("confidence")
+            suffix = f" {confidence:.2f}" if isinstance(confidence, (int, float)) else ""
+            draw.text((label_x, label_y), f"{idx}:{text}{suffix}", fill=(255, 0, 0))
+
+        overlay.save(output_path)
+        return str(output_path)
+
     def restore(
         self,
         image_path: str,
@@ -284,6 +346,7 @@ class TextRestorer:
                 raise
         self.timing["text_ocr"] = time.time() - text_start
         print(f"   {len(ocr_result.text_blocks)} text blocks ({self.timing['text_ocr']:.2f}s)")
+        self._print_ocr_debug_blocks(ocr_result, stage="raw")
 
         formula_result = None
 
@@ -379,6 +442,7 @@ class TextRestorer:
 
             self.timing["pix2text_ocr"] = time.time() - refine_start
             print(f"   Refined {fixed_count} formula blocks ({self.timing['pix2text_ocr']:.2f}s)")
+            self._print_ocr_debug_blocks(ocr_result, stage="after_formula")
 
             formula_result = None
 
@@ -388,6 +452,27 @@ class TextRestorer:
             print("\nSkipping formula")
 
         return ocr_result, formula_result
+
+    def _print_ocr_debug_blocks(self, ocr_result, stage: str = "raw") -> None:
+        """Print detailed OCR blocks for debugging recognition differences."""
+        blocks = getattr(ocr_result, "text_blocks", []) or []
+        print(f"   OCR debug [{stage}]: {len(blocks)} block(s)")
+        for idx, block in enumerate(blocks, start=1):
+            polygon = getattr(block, "polygon", []) or []
+            if polygon:
+                xs = [float(p[0]) for p in polygon]
+                ys = [float(p[1]) for p in polygon]
+                bbox = [round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1)]
+            else:
+                bbox = None
+            confidence = getattr(block, "confidence", None)
+            conf_text = f" conf={confidence:.4f}" if isinstance(confidence, (int, float)) else ""
+            font_size = getattr(block, "font_size_px", None)
+            font_text = f" font_px={font_size:.1f}" if isinstance(font_size, (int, float)) else ""
+            print(
+                f"      #{idx}: text={getattr(block, 'text', '')!r}"
+                f"{conf_text}{font_text} bbox={bbox} polygon={polygon}"
+            )
 
     def _should_refine_block(self, text: str) -> bool:
         """Whether to try refinement."""

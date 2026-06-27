@@ -16,6 +16,7 @@ Usage:
 import os
 import io
 import base64
+import xml.etree.ElementTree as ET
 from typing import Optional, List
 from PIL import Image
 import numpy as np
@@ -280,7 +281,8 @@ class IconPictureProcessor(BaseProcessor):
         
         # Filter elements to process
         elements_to_process = self._get_elements_to_process(context.elements)
-        
+        text_bboxes = self._extract_text_bboxes(context)
+
         self._log(f"Elements to process: {len(elements_to_process)}")
         
         processed_count = 0
@@ -289,7 +291,7 @@ class IconPictureProcessor(BaseProcessor):
         
         for elem in elements_to_process:
             try:
-                is_rmbg = self._process_element(elem, original_image)
+                is_rmbg = self._process_element(elem, original_image, text_bboxes)
                 processed_count += 1
                 if is_rmbg:
                     rmbg_count += 1
@@ -322,7 +324,7 @@ class IconPictureProcessor(BaseProcessor):
             if e.element_type.lower() in all_types and e.base64 is None
         ]
     
-    def _process_element(self, elem: ElementInfo, original_image: Image.Image) -> bool:
+    def _process_element(self, elem: ElementInfo, original_image: Image.Image, text_bboxes: List[List[int]] = None) -> bool:
         """Process one element. Returns True if RMBG was used."""
         elem_type = elem.element_type.lower()
         
@@ -361,6 +363,8 @@ class IconPictureProcessor(BaseProcessor):
             processed = cropped.convert("RGBA")
             elem.has_transparency = False
         
+        processed = self._apply_text_cutouts(processed, (x1, y1, x2, y2), text_bboxes or [])
+
         # To base64
         elem.base64 = self._image_to_base64(processed)
         
@@ -377,6 +381,63 @@ class IconPictureProcessor(BaseProcessor):
         
         return is_rmbg
     
+    def _extract_text_bboxes(self, context: ProcessingContext) -> List[List[int]]:
+        """Extract OCR text boxes so raster icon crops can yield to editable text."""
+        text_xml = getattr(context, "intermediate_results", {}).get("text_xml") if context else None
+        if not text_xml:
+            return []
+
+        bboxes: List[List[int]] = []
+        try:
+            root = ET.fromstring(text_xml)
+            for cell in root.iter("mxCell"):
+                if not (cell.get("value") or "").strip():
+                    continue
+                geometry = cell.find("mxGeometry")
+                if geometry is None:
+                    continue
+                x = float(geometry.get("x", 0))
+                y = float(geometry.get("y", 0))
+                w = float(geometry.get("width", 0))
+                h = float(geometry.get("height", 0))
+                if w <= 0 or h <= 0:
+                    continue
+                bboxes.append([int(x), int(y), int(x + w), int(y + h)])
+        except Exception as exc:
+            self._log(f"Failed to extract OCR text boxes for image cutouts: {exc}")
+        return bboxes
+
+    def _apply_text_cutouts(self, image: Image.Image, crop_box: tuple, text_bboxes: List[List[int]]) -> Image.Image:
+        """Make OCR text regions transparent inside raster crops to avoid duplicate/non-editable text."""
+        if not text_bboxes:
+            return image
+
+        crop_x1, crop_y1, crop_x2, crop_y2 = crop_box
+        rgba = image.convert("RGBA")
+        arr = np.array(rgba)
+        cut_count = 0
+
+        for tx1, ty1, tx2, ty2 in text_bboxes:
+            ix1 = max(crop_x1, tx1)
+            iy1 = max(crop_y1, ty1)
+            ix2 = min(crop_x2, tx2)
+            iy2 = min(crop_y2, ty2)
+            if ix2 <= ix1 or iy2 <= iy1:
+                continue
+
+            # Pad a little because OCR boxes are often tight around glyph strokes.
+            local_x1 = max(0, ix1 - crop_x1 - 2)
+            local_y1 = max(0, iy1 - crop_y1 - 2)
+            local_x2 = min(arr.shape[1], ix2 - crop_x1 + 2)
+            local_y2 = min(arr.shape[0], iy2 - crop_y1 + 2)
+            arr[local_y1:local_y2, local_x1:local_x2, 3] = 0
+            cut_count += 1
+
+        if cut_count:
+            self._log(f"Applied OCR text cutouts to raster crop: {cut_count}")
+            return Image.fromarray(arr)
+        return rgba
+
     def _generate_xml(self, elem: ElementInfo):
         """
         Generate XML fragment for image element.
