@@ -223,10 +223,10 @@ Verify with:
 
 <details> <summary><b>🧩 Optional Capabilities (OCR Engine, Formula, RMBG) - Click to expand</b></summary>
 
-- PaddleOCR (Alternative/Better for mixed text): Use paddlepaddle==3.2.2 (avoiding 3.3.0 bug).
+- PaddleOCR (Alternative/Better for mixed text): use PP-OCRv6 via PaddleOCR 3.7+.
 
   ```bash
-  pip install paddlepaddle==3.2.2 paddleocr.
+  pip install "paddleocr>=3.7.0,<4.0.0" "paddlepaddle>=3.0.0,<3.3.0".
   ```
 
 - Formula (Pix2Text): 
@@ -235,7 +235,7 @@ Verify with:
   pip install pix2text onnxruntime-gpu.
   ```
 
-- Background Removal (RMBG): `pip install onnxruntime modelscope` then run `python scripts/setup_rmbg.py`.
+- Background Removal (RMBG): dependencies are included in `requirements.txt` (`onnxruntime`, `modelscope`); run `python scripts/setup_rmbg.py` to download the ONNX model.
 </details>
 
 ### Phase 3: Configuration & Troubleshooting
@@ -263,7 +263,8 @@ Edit `config.yaml` to ensure `sam3.checkpoint_path` and `sam3.bpe_path` match yo
 
 - "no kernel image is available...": GPU arch mismatch. Upgrade PyTorch or set `sam3.device: "cpu"`.
 - "Model file not found at ...rmbg/...": RMBG is optional. Enable by downloading via script.
-- "PaddleOCR inference failed...": Use `paddlepaddle==3.2.2` or fallback to Tesseract.
+- "PaddleOCR inference failed...": Use PP-OCRv6-compatible `paddleocr>=3.7.0` with `paddlepaddle>=3.0.0,<3.3.0`, or fallback to Tesseract.
+- Windows `WinError 5` while installing/upgrading Pillow/PIL (for example `_imaging.cp312-win_amd64.pyd`): close any running Python/IDE/Jupyter process that imported Pillow, then reinstall from an activated virtualenv with `python -m pip install --upgrade --force-reinstall --no-cache-dir Pillow`. If the file remains locked, delete the stale `~il`/`PIL` folders under `.venv/Lib/site-packages` after closing Python processes and rerun the command.
 
 </details>
 
