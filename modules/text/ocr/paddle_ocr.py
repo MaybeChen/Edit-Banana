@@ -7,6 +7,7 @@ Recommended for PP-OCRv6: paddleocr>=3.7.0 + paddlepaddle>=3.0.0.
 
 from pathlib import Path
 from typing import List, Tuple, Any, Dict
+from importlib import metadata
 
 from PIL import Image
 
@@ -54,6 +55,7 @@ class PaddleOCRAdapter:
         scale: float = 1.0,
         min_confidence: float = 0.30,
         allow_download: bool = True,
+        allow_legacy_fallback: bool = False,
     ):
         if PaddleOCR is None:
             raise ImportError(
@@ -73,6 +75,8 @@ class PaddleOCRAdapter:
             "det_model_dir": text_detection_model_dir,
             "rec_model_dir": text_recognition_model_dir,
             "textline_orientation_model_dir": textline_orientation_model_dir,
+            "paddleocr_version": self._package_version("paddleocr"),
+            "paddlepaddle_version": self._package_version("paddlepaddle"),
         }
         if not allow_download:
             self._require_local_model_dir(text_detection_model_dir, "det")
@@ -100,8 +104,8 @@ class PaddleOCRAdapter:
         if engine:
             kwargs["engine"] = engine
         debug_kwargs = {k: v for k, v in kwargs.items() if k not in {"text_detection_model_dir", "text_recognition_model_dir", "textline_orientation_model_dir"}}
-        print(f"[PaddleOCRAdapter] init kwargs: {debug_kwargs}; scale={self.scale}; min_confidence={self.min_confidence}")
-        print(f"[PaddleOCRAdapter] model selection: {self.model_debug_info}")
+        print(f"[PaddleOCRAdapter] init kwargs: {debug_kwargs}; scale={self.scale}; min_confidence={self.min_confidence}", flush=True)
+        print(f"[PaddleOCRAdapter] model selection: {self.model_debug_info}", flush=True)
         if text_detection_model_dir:
             kwargs["text_detection_model_dir"] = text_detection_model_dir
         if text_recognition_model_dir:
@@ -110,7 +114,19 @@ class PaddleOCRAdapter:
             kwargs["textline_orientation_model_dir"] = textline_orientation_model_dir
         try:
             self._engine = PaddleOCR(**kwargs)
-        except TypeError:
+            self._engine_mode = "paddleocr_3"
+        except TypeError as e:
+            if not allow_legacy_fallback:
+                raise RuntimeError(
+                    "PaddleOCR did not accept PP-OCRv6/PaddleOCR 3.x arguments, so the configured v6 models "
+                    "were NOT used. Install compatible versions or explicitly set allow_legacy_fallback: true "
+                    "if you intentionally want PaddleOCR 2.x behavior.\n"
+                    "Expected install:\n"
+                    "  pip install \"paddleocr>=3.7.0,<4.0.0\" \"paddlepaddle>=3.0.0,<4.0.0\"\n"
+                    f"Detected paddleocr={self.model_debug_info.get('paddleocr_version')}, "
+                    f"paddlepaddle={self.model_debug_info.get('paddlepaddle_version')}\n"
+                    f"Original TypeError: {e}"
+                ) from e
             legacy_kwargs = {"use_angle_cls": use_angle_cls, "lang": lang}
             if text_detection_model_dir:
                 legacy_kwargs["det_model_dir"] = text_detection_model_dir
@@ -118,7 +134,13 @@ class PaddleOCRAdapter:
                 legacy_kwargs["rec_model_dir"] = text_recognition_model_dir
             if textline_orientation_model_dir:
                 legacy_kwargs["cls_model_dir"] = textline_orientation_model_dir
+            print(
+                "[PaddleOCRAdapter] WARNING: falling back to PaddleOCR legacy API; "
+                f"PP-OCRv6 model-name arguments were ignored. legacy_kwargs={legacy_kwargs}",
+                flush=True,
+            )
             self._engine = PaddleOCR(**legacy_kwargs)
+            self._engine_mode = "paddleocr_legacy"
         except AttributeError as e:
             if "set_optimization_level" in str(e):
                 raise RuntimeError(
@@ -129,6 +151,13 @@ class PaddleOCRAdapter:
                     "See README Optional PaddleOCR section."
                 ) from e
             raise
+
+    @staticmethod
+    def _package_version(package_name: str) -> str:
+        try:
+            return metadata.version(package_name)
+        except metadata.PackageNotFoundError:
+            return "not installed"
 
     @staticmethod
     def _find_local_model_dir(model_dir: str, kind: str) -> str:
@@ -330,6 +359,11 @@ class PaddleOCRAdapter:
         if img.mode != "RGB":
             img = img.convert("RGB")
         width, height = img.size
+        print(
+            f"[PaddleOCRAdapter] input image: path={image_path} size={width}x{height} "
+            f"scale={self.scale} engine_mode={getattr(self, '_engine_mode', 'unknown')}",
+            flush=True,
+        )
 
         ocr_image_path = str(image_path)
         tmp_path = None
@@ -343,6 +377,11 @@ class PaddleOCRAdapter:
             tmp.close()
             scaled.save(tmp_path)
             ocr_image_path = tmp_path
+            print(
+                f"[PaddleOCRAdapter] scaled OCR image: path={ocr_image_path} "
+                f"size={int(width * self.scale)}x{int(height * self.scale)}",
+                flush=True,
+            )
 
         try:
             # PaddleOCR 3.x / PP-OCRv6 uses predict(); keep ocr() fallback for older installs.

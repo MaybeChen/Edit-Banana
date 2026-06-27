@@ -41,6 +41,8 @@ ocr:
     use_angle_cls: false
     # Set allow_download: false to require local models and fail fast instead of downloading.
     allow_download: false
+    # Keep false so PP-OCRv6 config fails fast instead of silently using PaddleOCR 2.x legacy args.
+    allow_legacy_fallback: false
     # PP-OCRv6 is the default for PaddleOCR >= 3.7.0. Choose tiny/small/medium as needed.
     ocr_version: "PP-OCRv6"
     text_detection_model_name: "PP-OCRv6_medium_det"
