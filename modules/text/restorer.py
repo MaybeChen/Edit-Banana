@@ -148,6 +148,10 @@ class TextRestorer:
         
         # Step 1: OCR
         ocr_result, formula_result = self._run_ocr(str(image_path))
+        ocr_result.text_blocks = self._merge_adjacent_ocr_blocks(ocr_result.text_blocks)
+        self._print_ocr_debug_blocks(ocr_result, stage="merged")
+
+        self.last_raw_ocr_blocks = self._ocr_result_to_dict_list(ocr_result)
 
         self.last_raw_ocr_blocks = self._ocr_result_to_dict_list(ocr_result)
 
@@ -452,6 +456,100 @@ class TextRestorer:
             print("\nSkipping formula")
 
         return ocr_result, formula_result
+
+    def _merge_adjacent_ocr_blocks(self, blocks: List[Any]) -> List[Any]:
+        """Merge fragmented same-line OCR blocks into line-level text blocks."""
+        if len(blocks) < 2:
+            return blocks
+
+        def bbox(block):
+            poly = getattr(block, "polygon", []) or []
+            if not poly:
+                return [0.0, 0.0, 0.0, 0.0]
+            xs = [float(p[0]) for p in poly]
+            ys = [float(p[1]) for p in poly]
+            return [min(xs), min(ys), max(xs), max(ys)]
+
+        def height(box):
+            return max(box[3] - box[1], 1.0)
+
+        sorted_blocks = sorted(blocks, key=lambda b: ((bbox(b)[1] + bbox(b)[3]) / 2, bbox(b)[0]))
+        rows = []
+        for block in sorted_blocks:
+            box = bbox(block)
+            cy = (box[1] + box[3]) / 2
+            placed = False
+            for row in rows:
+                row_cy = row["cy"]
+                row_h = row["height"]
+                if abs(cy - row_cy) <= max(row_h, height(box)) * 0.45:
+                    row["blocks"].append(block)
+                    row["cy"] = (row_cy * (len(row["blocks"]) - 1) + cy) / len(row["blocks"])
+                    row["height"] = max(row_h, height(box))
+                    placed = True
+                    break
+            if not placed:
+                rows.append({"cy": cy, "height": height(box), "blocks": [block]})
+
+        merged = []
+        merge_count = 0
+        for row in rows:
+            row_blocks = sorted(row["blocks"], key=lambda b: bbox(b)[0])
+            group = []
+            last_box = None
+            for block in row_blocks:
+                box = bbox(block)
+                if not group:
+                    group = [block]
+                    last_box = box
+                    continue
+                gap = box[0] - last_box[2]
+                max_h = max(height(last_box), height(box))
+                # Allow overlap and normal character spacing; split distant labels on the same row.
+                if gap <= max_h * 1.8:
+                    group.append(block)
+                    last_box = [
+                        min(last_box[0], box[0]),
+                        min(last_box[1], box[1]),
+                        max(last_box[2], box[2]),
+                        max(last_box[3], box[3]),
+                    ]
+                else:
+                    merged.append(self._merge_ocr_group(group, bbox))
+                    if len(group) > 1:
+                        merge_count += len(group)
+                    group = [block]
+                    last_box = box
+            if group:
+                merged.append(self._merge_ocr_group(group, bbox))
+                if len(group) > 1:
+                    merge_count += len(group)
+
+        if merge_count:
+            print(f"   OCR merge: merged fragmented character boxes ({merge_count} source blocks -> {len(merged)} blocks)")
+        return merged
+
+    def _merge_ocr_group(self, group: List[Any], bbox_func):
+        if len(group) == 1:
+            return group[0]
+        import copy
+
+        merged = copy.deepcopy(group[0])
+        boxes = [bbox_func(block) for block in group]
+        x1 = min(box[0] for box in boxes)
+        y1 = min(box[1] for box in boxes)
+        x2 = max(box[2] for box in boxes)
+        y2 = max(box[3] for box in boxes)
+        merged.text = "".join(getattr(block, "text", "") for block in group)
+        merged.polygon = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+        confidences = [getattr(block, "confidence", None) for block in group]
+        numeric_conf = [c for c in confidences if isinstance(c, (int, float))]
+        if numeric_conf:
+            merged.confidence = sum(numeric_conf) / len(numeric_conf)
+        heights = [max(box[3] - box[1], 1.0) for box in boxes]
+        merged.font_size_px = sorted(heights)[len(heights) // 2]
+        merged.spans = []
+        return merged
 
     def _print_ocr_debug_blocks(self, ocr_result, stage: str = "raw") -> None:
         """Print detailed OCR blocks for debugging recognition differences."""
