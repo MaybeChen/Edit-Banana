@@ -7,10 +7,15 @@ psutil
 # PaddleOCR 3.x/PP-OCRv6 and ONNX Runtime work with modern protobuf.
 protobuf>=4.25.8
 pyyaml
-opencv-python-headless
-numpy
+# Keep the scientific/CV stack on NumPy 2.x. New OpenCV, SciPy and tifffile
+# releases require NumPy >=2, so leaving NumPy unconstrained can let pip keep an
+# incompatible old NumPy 1.26.x in existing environments.
+numpy>=2.1,<2.8
+opencv-python-headless>=4.13.0.92,<5.0.0
+scipy>=1.18.0,<2.0.0
+tifffile>=2026.6.1
 Pillow
-scikit-image
+scikit-image>=0.26.0,<1.0.0
 requests
 fastapi
 uvicorn[standard]
@@ -30,4 +35,6 @@ pix2text
 onnxruntime
 modelscope
 
-# PyTorch and SAM3: install separately; see README (PyTorch + SAM3 source).
+# PyTorch: install separately for your CUDA/CPU platform; see README.
+# SAM3 library used by scripts/setup_sam3.sh and the segmentation pipeline.
+sam3 @ git+https://github.com/facebookresearch/sam3.git
