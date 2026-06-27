@@ -10,7 +10,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 SAM3_SRC="${SAM3_SRC:-$PROJECT_ROOT/sam3_src}"
-MODELS_DIR="${MODELS_DIR:-$PROJECT_ROOT/models}"
+BPE_DIR="${BPE_DIR:-${MODELS_DIR:-$PROJECT_ROOT/models/sam3}}"
 # 直连 GitHub 失败时可指定镜像，例如：SAM3_CLONE_URL="https://gitclone.com/github.com/facebookresearch/sam3.git"
 SAM3_CLONE_URL="${SAM3_CLONE_URL:-https://github.com/facebookresearch/sam3.git}"
 
@@ -25,20 +25,20 @@ fi
 echo "[2/3] 安装 SAM3 包 (pip install -e $SAM3_SRC) ..."
 pip install -e "$SAM3_SRC"
 
-echo "[3/3] 复制 BPE 词表到 models/ ..."
-mkdir -p "$MODELS_DIR"
+echo "[3/3] 复制 BPE 词表到 $BPE_DIR/ ..."
+mkdir -p "$BPE_DIR"
 BPE_NAME="bpe_simple_vocab_16e6.txt.gz"
 for BPE_SRC in "$SAM3_SRC/assets/$BPE_NAME" "$SAM3_SRC/sam3/assets/$BPE_NAME"; do
   if [[ -f "$BPE_SRC" ]]; then
-    cp "$BPE_SRC" "$MODELS_DIR/"
-    echo "      已复制到 $MODELS_DIR/$BPE_NAME"
+    cp "$BPE_SRC" "$BPE_DIR/"
+    echo "      已复制到 $BPE_DIR/$BPE_NAME"
     break
   fi
 done
-if [[ ! -f "$MODELS_DIR/$BPE_NAME" ]]; then
+if [[ ! -f "$BPE_DIR/$BPE_NAME" ]]; then
   echo "      未找到 BPE 文件，在仓库中查找："
   find "$SAM3_SRC" -name "*.gz" 2>/dev/null || true
 fi
 
 echo ""
-echo "完成。下一步：将 SAM3 权重下载到 $MODELS_DIR/（推荐 ModelScope），并配置 config.yaml，详见 docs/SETUP_SAM3.md"
+echo "完成。下一步：将 SAM3 权重下载到 models/（推荐 ModelScope），并配置 config.yaml，详见 docs/SETUP_SAM3.md"
