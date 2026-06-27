@@ -2,7 +2,7 @@
 # Checkpoint must be sam3.pt (safetensors not used); BPE: bpe_simple_vocab_16e6.txt.gz
 sam3:
   checkpoint_path: "models/sam3_ms/sam3.pt"
-  bpe_path: "models/bpe_simple_vocab_16e6.txt.gz"
+  bpe_path: "models/sam3/bpe_simple_vocab_16e6.txt.gz"
   # device: "cuda" | "cpu" | leave empty for auto (cuda if available)
   # Set "cpu" if GPU does not match current PyTorch
   # device: "cpu"
