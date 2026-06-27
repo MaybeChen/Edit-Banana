@@ -264,6 +264,7 @@ Edit `config.yaml` to ensure `sam3.checkpoint_path` and `sam3.bpe_path` match yo
 - "no kernel image is available...": GPU arch mismatch. Upgrade PyTorch or set `sam3.device: "cpu"`.
 - "Model file not found at ...rmbg/...": RMBG is optional. Enable by downloading via script.
 - "PaddleOCR inference failed...": Use PP-OCRv6-compatible `paddleocr>=3.7.0` with `paddlepaddle>=3.0.0,<3.3.0`, or fallback to Tesseract.
+- Windows `WinError 5` while installing/upgrading Pillow/PIL (for example `_imaging.cp312-win_amd64.pyd`): close any running Python/IDE/Jupyter process that imported Pillow, then reinstall from an activated virtualenv with `python -m pip install --upgrade --force-reinstall --no-cache-dir Pillow`. If the file remains locked, delete the stale `~il`/`PIL` folders under `.venv/Lib/site-packages` after closing Python processes and rerun the command.
 
 </details>
 

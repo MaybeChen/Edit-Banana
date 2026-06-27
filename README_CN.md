@@ -256,6 +256,7 @@ pip install -r requirements.txt
 - "No module named 'triton'"：SAM3 的 PyTorch 注意力栈可能需要 Triton。根目录 `requirements.txt` 已按平台加入依赖（Linux 安装 `triton`，Windows 安装 `triton-windows`）；如果 Windows 原生环境与 `triton-windows` 的 PyTorch/CUDA/Python 版本不匹配，建议改用 WSL/Linux 运行 SAM3。
 - "Model file not found at ...rmbg/..."：RMBG 模块是可选的，如果你需要，请通过脚本下载启用。
 - "PaddleOCR inference failed..."：请使用支持 PP-OCRv6 的 `paddleocr>=3.7.0` 与 `paddlepaddle>=3.0.0,<3.3.0`，或回退到使用 Tesseract 识别。
+- Windows 安装/升级 Pillow/PIL 时出现 `WinError 5`（例如 `_imaging.cp312-win_amd64.pyd`）：先关闭所有正在运行的 Python、IDE、Jupyter 或占用该虚拟环境的进程，然后在已激活的虚拟环境中执行 `python -m pip install --upgrade --force-reinstall --no-cache-dir Pillow`。如果文件仍被锁定，关闭 Python 进程后删除 `.venv/Lib/site-packages` 下残留的 `~il`/`PIL` 目录，再重新执行安装。
 </details>
 
 ---
