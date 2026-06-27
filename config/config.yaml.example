@@ -35,7 +35,7 @@ prompt_groups:
 
 # Text OCR engine: tesseract (system) or paddleocr (better mixed CN/EN)
 ocr:
-  engine: "tesseract"   # "tesseract" | "paddleocr"
+  engine: "paddleocr"   # "tesseract" | "paddleocr"
   paddleocr:
     lang: "ch"
     use_angle_cls: true

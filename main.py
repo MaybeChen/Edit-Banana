@@ -69,6 +69,19 @@ def load_config() -> dict:
             'paths': {
                 'input_dir': './input',
                 'output_dir': './output',
+            },
+            'ocr': {
+                'engine': 'paddleocr',
+                'paddleocr': {
+                    'lang': 'ch',
+                    'use_angle_cls': True,
+                    'allow_download': True,
+                    'ocr_version': 'PP-OCRv6',
+                    'text_detection_model_name': 'PP-OCRv6_medium_det',
+                    'text_recognition_model_name': 'PP-OCRv6_medium_rec',
+                    'scale': 2.0,
+                    'min_confidence': 0.30,
+                },
             }
         }
     
@@ -95,7 +108,7 @@ class Pipeline:
         """OCR/text step; None if deps missing."""
         if self._text_restorer is None and TextRestorer is not None:
             ocr_config = self.config.get("ocr") or {}
-            ocr_engine = ocr_config.get("engine", "tesseract")
+            ocr_engine = os.environ.get("OCR_ENGINE", ocr_config.get("engine", "paddleocr"))
             self._text_restorer = TextRestorer(
                 formula_engine="none",
                 ocr_engine=ocr_engine,
