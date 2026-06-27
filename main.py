@@ -179,6 +179,14 @@ class Pipeline:
                         f.write(text_xml_content)
                     context.intermediate_results['text_xml'] = text_xml_content
                     print(f"   Saved: {text_output_path}")
+                    if hasattr(self.text_restorer, "save_ocr_artifacts"):
+                        ocr_artifact_path = self.text_restorer.save_ocr_artifacts(img_output_dir, image_path)
+                        context.intermediate_results['ocr_result_json'] = ocr_artifact_path
+                        print(f"   OCR result: {ocr_artifact_path}")
+                    if hasattr(self.text_restorer, "save_ocr_overlay"):
+                        ocr_overlay_path = self.text_restorer.save_ocr_overlay(img_output_dir, image_path)
+                        context.intermediate_results['ocr_overlay'] = ocr_overlay_path
+                        print(f"   OCR overlay: {ocr_overlay_path}")
                 except Exception as e:
                     print(f"   Text step failed: {e}")
                     print("   Continuing without text...")

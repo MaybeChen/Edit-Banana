@@ -243,9 +243,10 @@ class SAM3Model(ModelWrapper):
             
         print(f"[SAM3Model] 加载模型中... (设备: {self.device})")
         
-        from sam3.model_builder import build_sam3_image_model
-        from sam3.model.sam3_image_processor import Sam3Processor
-        
+        from sam3_imports import import_sam3_image_components
+
+        build_sam3_image_model, Sam3Processor = import_sam3_image_components()
+
         with self._redirect_cuda_allocations_when_cpu_only():
             self._model = build_sam3_image_model(
                 bpe_path=self.bpe_path,
