@@ -2,7 +2,7 @@
 # Checkpoint must be sam3.pt (safetensors not used); BPE: bpe_simple_vocab_16e6.txt.gz
 sam3:
   checkpoint_path: "models/sam3_ms/sam3.pt"
-  bpe_path: "models/bpe_simple_vocab_16e6.txt.gz"
+  bpe_path: "models/sam3/bpe_simple_vocab_16e6.txt.gz"
   # device: "cuda" | "cpu" | leave empty for auto (cuda if available)
   # Set "cpu" if GPU does not match current PyTorch
   # device: "cpu"
@@ -35,18 +35,35 @@ prompt_groups:
 
 # Text OCR engine: tesseract (system) or paddleocr (better mixed CN/EN)
 ocr:
-  engine: "tesseract"   # "tesseract" | "paddleocr"
+  engine: "paddleocr"   # "tesseract" | "paddleocr"
   paddleocr:
     lang: "ch"
-    use_angle_cls: true
+    use_angle_cls: false
     # Set allow_download: false to require local models and fail fast instead of downloading.
     allow_download: false
-    # Local PaddleOCR 2.x model root. Auto-detects *_det_infer, *_rec_infer, *_cls_infer under this directory.
+    # Keep false so PP-OCRv6 config fails fast instead of silently using PaddleOCR 2.x legacy args.
+    allow_legacy_fallback: false
+    # PP-OCRv6 is the default for PaddleOCR >= 3.7.0. Choose tiny/small/medium as needed.
+    ocr_version: "PP-OCRv6"
+    text_detection_model_name: "PP-OCRv6_medium_det"
+    text_recognition_model_name: "PP-OCRv6_medium_rec"
+    # Match PaddleOCR web demo detector settings for small diagram labels.
+    text_det_limit_side_len: 64
+    text_det_limit_type: "min"
+    text_det_thresh: 0.3
+    text_det_box_thresh: 0.6
+    text_det_unclip_ratio: 1.5
+    text_rec_score_thresh: 0.0
+    # Keep local scaling off by default when detector min-side limit is used; coordinates are still normalized if enabled.
+    scale: 1.0
+    # Drop noisy icon-like false positives with very low recognition confidence.
+    min_confidence: 0.30
+    # Local model root. Auto-detects *_det_infer, *_rec_infer, *_cls_infer under this directory.
     model_dir: "models/paddleocr"
-    # Or set explicit model directories:
-    # det_model_dir: "models/paddleocr/ch_PP-OCRv4_det_infer"
-    # rec_model_dir: "models/paddleocr/ch_PP-OCRv4_rec_infer"
-    # cls_model_dir: "models/paddleocr/ch_ppocr_mobile_v2.0_cls_infer"
+    # Or set explicit PaddleOCR 3.x model directories:
+    # text_detection_model_dir: "models/paddleocr/PP-OCRv6_medium_det"
+    # text_recognition_model_dir: "models/paddleocr/PP-OCRv6_medium_rec"
+    # textline_orientation_model_dir: "models/paddleocr/PP-LCNet_x1_0_textline_ori"
 
 # Multimodal / VLM (optional, for text/OCR)
 multimodal:
