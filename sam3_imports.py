@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Tuple
 
@@ -42,6 +43,11 @@ def _prepend_existing_sam3_sources() -> None:
 def import_sam3_image_components() -> Tuple[object, object]:
     """Import SAM3 image builder and processor with a helpful setup error."""
     _prepend_existing_sam3_sources()
+    warnings.filterwarnings(
+        "ignore",
+        message="CUDA is not available or torch_xla is imported. Disabling autocast.*",
+        category=UserWarning,
+    )
     try:
         from sam3.model_builder import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
