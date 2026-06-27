@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from .ocr.local_ocr import LocalOCR
 from .coord_processor import CoordProcessor
@@ -216,6 +216,42 @@ class TextRestorer:
         }
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+        return str(output_path)
+
+    def save_ocr_overlay(self, output_dir: str, image_path: str) -> str:
+        """Draw OCR recognition boxes and text labels on the original image."""
+        output_path = Path(output_dir) / "ocr_overlay.png"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with Image.open(image_path).convert("RGB") as img:
+            overlay = img.copy()
+        draw = ImageDraw.Draw(overlay)
+
+        for idx, block in enumerate(self.last_text_blocks or self.last_raw_ocr_blocks, start=1):
+            polygon = block.get("polygon") or []
+            if polygon and len(polygon) >= 3:
+                points = [(float(x), float(y)) for x, y in polygon]
+                draw.line(points + [points[0]], fill=(255, 0, 0), width=2)
+                label_x = min(p[0] for p in points)
+                label_y = max(0, min(p[1] for p in points) - 14)
+            else:
+                geo = block.get("geometry", {})
+                x = float(geo.get("x", 0))
+                y = float(geo.get("y", 0))
+                w = float(geo.get("width", 0))
+                h = float(geo.get("height", 0))
+                if w <= 0 or h <= 0:
+                    continue
+                draw.rectangle([x, y, x + w, y + h], outline=(255, 0, 0), width=2)
+                label_x = x
+                label_y = max(0, y - 14)
+
+            text = str(block.get("text", ""))[:24]
+            confidence = block.get("confidence")
+            suffix = f" {confidence:.2f}" if isinstance(confidence, (int, float)) else ""
+            draw.text((label_x, label_y), f"{idx}:{text}{suffix}", fill=(255, 0, 0))
+
+        overlay.save(output_path)
         return str(output_path)
 
     def restore(
