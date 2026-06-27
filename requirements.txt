@@ -7,15 +7,16 @@ psutil
 # PaddleOCR 3.x/PP-OCRv6 and ONNX Runtime work with modern protobuf.
 protobuf>=4.25.8
 pyyaml
-# Keep the scientific/CV stack on NumPy 2.x. New OpenCV, SciPy and tifffile
-# releases require NumPy >=2, so leaving NumPy unconstrained can let pip keep an
-# incompatible old NumPy 1.26.x in existing environments.
-numpy>=2.1,<2.8
-opencv-python-headless>=4.13.0.92,<5.0.0
-scipy>=1.18.0,<2.0.0
-tifffile>=2026.6.1
+# Keep the scientific/CV stack on NumPy 1.26.x for PaddlePaddle/Windows compatibility.
+# OpenCV 4.13+, SciPy 1.18+ and tifffile 2026+ require NumPy 2.x, so pin older
+# compatible releases when the project environment stays on NumPy 1.26.4.
+numpy>=1.26.4,<2.0.0
+opencv-python==4.11.0.86
+opencv-python-headless==4.11.0.86
+scipy>=1.13.1,<1.18.0
+tifffile>=2024.9.20,<2026.0.0
 Pillow
-scikit-image>=0.26.0,<1.0.0
+scikit-image>=0.24.0,<0.26.0
 requests
 fastapi
 uvicorn[standard]
