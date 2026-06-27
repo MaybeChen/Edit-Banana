@@ -35,6 +35,4 @@ pix2text
 onnxruntime
 modelscope
 
-# PyTorch: install separately for your CUDA/CPU platform; see README.
-# SAM3 library used by scripts/setup_sam3.sh and the segmentation pipeline.
-sam3 @ git+https://github.com/facebookresearch/sam3.git
+# PyTorch and SAM3 are installed separately; see README and scripts/setup_sam3.sh.
