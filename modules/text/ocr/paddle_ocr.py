@@ -66,6 +66,14 @@ class PaddleOCRAdapter:
         textline_orientation_model_dir = (
             textline_orientation_model_dir or cls_model_dir or self._find_local_model_dir(model_dir, "cls")
         )
+        self.model_debug_info = {
+            "det_model_name": text_detection_model_name,
+            "rec_model_name": text_recognition_model_name,
+            "textline_orientation_enabled": use_angle_cls,
+            "det_model_dir": text_detection_model_dir,
+            "rec_model_dir": text_recognition_model_dir,
+            "textline_orientation_model_dir": textline_orientation_model_dir,
+        }
         if not allow_download:
             self._require_local_model_dir(text_detection_model_dir, "det")
             self._require_local_model_dir(text_recognition_model_dir, "rec")
@@ -93,6 +101,7 @@ class PaddleOCRAdapter:
             kwargs["engine"] = engine
         debug_kwargs = {k: v for k, v in kwargs.items() if k not in {"text_detection_model_dir", "text_recognition_model_dir", "textline_orientation_model_dir"}}
         print(f"[PaddleOCRAdapter] init kwargs: {debug_kwargs}; scale={self.scale}; min_confidence={self.min_confidence}")
+        print(f"[PaddleOCRAdapter] model selection: {self.model_debug_info}")
         if text_detection_model_dir:
             kwargs["text_detection_model_dir"] = text_detection_model_dir
         if text_recognition_model_dir:
@@ -295,10 +304,22 @@ class PaddleOCRAdapter:
             texts = nested_get("rec_texts") or []
             scores = nested_get("rec_scores") or []
             polys = nested_get("rec_polys") or nested_get("dt_polys") or []
+            boxes = nested_get("rec_boxes") or []
+            angles = nested_get("textline_orientation_angles") or []
             print(
-                f"[PaddleOCRAdapter] raw[{idx}] texts={len(texts)} polys={len(polys)} "
-                f"scores={len(scores)} rec_texts={list(texts)[:20]} rec_scores={list(scores)[:20]}"
+                f"[PaddleOCRAdapter] raw[{idx}] det_model={self.model_debug_info.get('det_model_name')} "
+                f"det_polys={len(polys)} det_boxes={len(boxes)} dt_polys={list(polys)[:20]} rec_boxes={list(boxes)[:20]}"
             )
+            print(
+                f"[PaddleOCRAdapter] raw[{idx}] rec_model={self.model_debug_info.get('rec_model_name')} "
+                f"rec_texts={list(texts)[:20]} rec_scores={list(scores)[:20]}"
+            )
+            if self.model_debug_info.get("textline_orientation_enabled"):
+                print(
+                    f"[PaddleOCRAdapter] raw[{idx}] textline_orientation_model="
+                    f"{self.model_debug_info.get('textline_orientation_model_dir') or 'default'} "
+                    f"angles={list(angles)[:20]}"
+                )
 
     def analyze_image(self, image_path: str) -> OCRResult:
         image_path = Path(image_path)
