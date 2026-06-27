@@ -153,6 +153,8 @@ class TextRestorer:
 
         self.last_raw_ocr_blocks = self._ocr_result_to_dict_list(ocr_result)
 
+        self.last_raw_ocr_blocks = self._ocr_result_to_dict_list(ocr_result)
+
         # Step 2: Formula (layout OCR + Pix2Text)
         processing_start = time.time()
 
