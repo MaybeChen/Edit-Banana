@@ -155,7 +155,7 @@ Save and run the main pipeline (CLI or server).
   CPU mode can expose dtype mismatches when SAM3 emits BF16 activations but linear weights remain Float. The project installs CPU compatibility hooks to align linear inputs with layer weights; if you still see this, update to the latest code first.
 
 - **`ModuleNotFoundError: No module named 'triton'`**  
-  SAM3 may import Triton through its PyTorch attention stack. On Linux, install the official package with `pip install triton` in the same environment. On native Windows, official Triton support is limited; try `pip install triton-windows` only if your PyTorch/CUDA/Python versions are supported, otherwise run SAM3 from WSL/Linux.
+  SAM3 may import Triton through its PyTorch attention stack. The root `requirements.txt` now includes platform-specific entries (`triton` on Linux, `triton-windows` on Windows). If your native Windows PyTorch/CUDA/Python versions are not supported by `triton-windows`, run SAM3 from WSL/Linux instead.
 
 - **Hugging Face download is slow or fails**  
   Use **ModelScope** instead: <https://modelscope.cn/models/facebook/sam3> (see Option A above).

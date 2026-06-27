@@ -4,6 +4,10 @@ setuptools<81
 einops
 pycocotools
 psutil
+# SAM3/PyTorch attention stack may import Triton. Use platform markers because
+# official Triton wheels are Linux-only; native Windows users can try triton-windows.
+triton; platform_system == "Linux"
+triton-windows; platform_system == "Windows"
 # PaddleOCR 3.x/PP-OCRv6 and ONNX Runtime work with modern protobuf.
 protobuf>=4.25.8
 pyyaml
