@@ -69,6 +69,28 @@ def load_config() -> dict:
             'paths': {
                 'input_dir': './input',
                 'output_dir': './output',
+            },
+            'ocr': {
+                'engine': 'paddleocr',
+                'paddleocr': {
+                    'lang': 'ch',
+                    'use_angle_cls': False,
+                    'allow_download': True,
+                    'allow_fallback_to_tesseract': False,
+                    'allow_legacy_fallback': False,
+                    'ocr_version': 'PP-OCRv6',
+                    'text_detection_model_name': 'PP-OCRv6_medium_det',
+                    'text_recognition_model_name': 'PP-OCRv6_medium_rec',
+                    'textline_orientation_model_name': 'PP-LCNet_x1_0_textline_ori',
+                    'text_det_limit_side_len': 64,
+                    'text_det_limit_type': 'min',
+                    'text_det_thresh': 0.3,
+                    'text_det_box_thresh': 0.6,
+                    'text_det_unclip_ratio': 1.5,
+                    'text_rec_score_thresh': 0.0,
+                    'scale': 1.0,
+                    'min_confidence': 0.30,
+                },
             }
         }
     
@@ -95,7 +117,7 @@ class Pipeline:
         """OCR/text step; None if deps missing."""
         if self._text_restorer is None and TextRestorer is not None:
             ocr_config = self.config.get("ocr") or {}
-            ocr_engine = ocr_config.get("engine", "tesseract")
+            ocr_engine = os.environ.get("OCR_ENGINE", ocr_config.get("engine", "paddleocr"))
             self._text_restorer = TextRestorer(
                 formula_engine="none",
                 ocr_engine=ocr_engine,
@@ -179,6 +201,14 @@ class Pipeline:
                         f.write(text_xml_content)
                     context.intermediate_results['text_xml'] = text_xml_content
                     print(f"   Saved: {text_output_path}")
+                    if hasattr(self.text_restorer, "save_ocr_artifacts"):
+                        ocr_artifact_path = self.text_restorer.save_ocr_artifacts(img_output_dir, image_path)
+                        context.intermediate_results['ocr_result_json'] = ocr_artifact_path
+                        print(f"   OCR result: {ocr_artifact_path}")
+                    if hasattr(self.text_restorer, "save_ocr_overlay"):
+                        ocr_overlay_path = self.text_restorer.save_ocr_overlay(img_output_dir, image_path)
+                        context.intermediate_results['ocr_overlay'] = ocr_overlay_path
+                        print(f"   OCR overlay: {ocr_overlay_path}")
                 except Exception as e:
                     print(f"   Text step failed: {e}")
                     print("   Continuing without text...")
