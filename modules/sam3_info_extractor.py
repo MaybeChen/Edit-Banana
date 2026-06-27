@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import yaml
 import warnings
+import time
 from PIL import Image
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -332,12 +333,27 @@ class SAM3Model(ModelWrapper):
         """
         if not self._is_loaded:
             self.load()
-        
+
+        predict_start = time.time()
+        print(
+            f"[SAM3Model] 准备图像状态: {image_path} "
+            f"(prompts={len(prompts)}, device={self.device})",
+            flush=True,
+        )
         with self._redirect_cuda_allocations_when_cpu_only():
             state, pil_image = self._get_image_state(image_path)
-        
+        print(
+            f"[SAM3Model] 图像状态完成: size={pil_image.size}, elapsed={time.time() - predict_start:.2f}s",
+            flush=True,
+        )
+
         results = []
-        for prompt in prompts:
+        for prompt_idx, prompt in enumerate(prompts, start=1):
+            prompt_start = time.time()
+            print(
+                f"[SAM3Model]   prompt {prompt_idx}/{len(prompts)}: {prompt!r} 开始",
+                flush=True,
+            )
             with self._redirect_cuda_allocations_when_cpu_only():
                 self._processor.reset_all_prompts(state)
                 result_state = self._processor.set_text_prompt(prompt=prompt, state=state)
@@ -347,6 +363,7 @@ class SAM3Model(ModelWrapper):
             scores = result_state.get("scores", [])
             
             num_masks = masks.shape[0] if (isinstance(masks, torch.Tensor) and masks.dim() > 0) else len(masks)
+            kept_before = len(results)
             
             for i in range(num_masks):
                 score = scores[i]
@@ -384,6 +401,12 @@ class SAM3Model(ModelWrapper):
                         'polygon': polygon,
                         'area': area
                     })
+            print(
+                f"[SAM3Model]   prompt {prompt_idx}/{len(prompts)}: {prompt!r} "
+                f"完成 masks={num_masks}, kept={len(results) - kept_before}, "
+                f"elapsed={time.time() - prompt_start:.2f}s",
+                flush=True,
+            )
         
         return results
     
