@@ -76,6 +76,8 @@ def load_config() -> dict:
                     'lang': 'ch',
                     'use_angle_cls': False,
                     'allow_download': True,
+                    'allow_fallback_to_tesseract': False,
+                    'allow_legacy_fallback': False,
                     'ocr_version': 'PP-OCRv6',
                     'text_detection_model_name': 'PP-OCRv6_medium_det',
                     'text_recognition_model_name': 'PP-OCRv6_medium_rec',

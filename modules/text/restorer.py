@@ -47,6 +47,9 @@ class TextRestorer:
         self.formula_engine = formula_engine
         self._ocr_engine = (ocr_engine or "tesseract").strip().lower()
         self._ocr_config = ocr_config or {}
+        paddle_config = self._ocr_config.get("paddleocr") or {}
+        self._allow_paddleocr_fallback = bool(paddle_config.get("allow_fallback_to_tesseract", False))
+        self._actual_ocr_engine = None
 
         self._layout_ocr = None
         self._pix2text_ocr = None
@@ -67,13 +70,24 @@ class TextRestorer:
 
     @property
     def layout_ocr(self):
-        """Lazy-init layout OCR (tesseract or paddleocr); fallback to Tesseract if PaddleOCR fails."""
+        """Lazy-init layout OCR (tesseract or paddleocr)."""
         if self._layout_ocr is None:
             if self._ocr_engine == "paddleocr":
                 try:
                     from .ocr.paddle_ocr import PaddleOCRAdapter
-                    self._layout_ocr = PaddleOCRAdapter(**(self._ocr_config.get("paddleocr") or {}))
+                    adapter_config = dict(self._ocr_config.get("paddleocr") or {})
+                    adapter_config.pop("allow_fallback_to_tesseract", None)
+                    self._layout_ocr = PaddleOCRAdapter(**adapter_config)
+                    self._actual_ocr_engine = "paddleocr"
                 except Exception as e:
+                    if not self._allow_paddleocr_fallback:
+                        raise RuntimeError(
+                            "PaddleOCR was requested but could not be initialized. Refusing to silently "
+                            "fall back to Tesseract because that makes OCR results look like PaddleOCR "
+                            "while actually using a different engine. Set "
+                            "ocr.paddleocr.allow_fallback_to_tesseract: true to opt in to fallback.\n"
+                            f"Original PaddleOCR error: {e}"
+                        ) from e
                     import warnings
                     warnings.warn(
                         f"PaddleOCR unavailable ({e}), falling back to Tesseract. See README for compatible install.",
@@ -81,8 +95,10 @@ class TextRestorer:
                         stacklevel=2,
                     )
                     self._layout_ocr = LocalOCR()
+                    self._actual_ocr_engine = "tesseract_fallback"
             else:
                 self._layout_ocr = LocalOCR()
+                self._actual_ocr_engine = "tesseract"
         return self._layout_ocr
 
     @property
@@ -333,9 +349,19 @@ class TextRestorer:
         print(f"\n📖 Text OCR ({engine_label})...")
         text_start = time.time()
         try:
-            ocr_result = self.layout_ocr.analyze_image(image_path)
+            layout_ocr = self.layout_ocr
+            engine_label = self._actual_ocr_engine or layout_ocr.__class__.__name__
+            print(f"   OCR backend resolved: {engine_label}")
+            ocr_result = layout_ocr.analyze_image(image_path)
         except Exception as e:
             if self._ocr_engine == "paddleocr":
+                if not self._allow_paddleocr_fallback:
+                    raise RuntimeError(
+                        "PaddleOCR inference failed and fallback is disabled. Set "
+                        "ocr.paddleocr.allow_fallback_to_tesseract: true only if you accept "
+                        "Tesseract results.\n"
+                        f"Original PaddleOCR inference error: {e!r}"
+                    ) from e
                 import warnings
                 warnings.warn(
                     f"PaddleOCR inference failed ({e!r}), falling back to Tesseract.",
@@ -343,6 +369,7 @@ class TextRestorer:
                     stacklevel=2,
                 )
                 self._layout_ocr = LocalOCR()
+                self._actual_ocr_engine = "tesseract_fallback"
                 ocr_result = self._layout_ocr.analyze_image(image_path)
             else:
                 raise
