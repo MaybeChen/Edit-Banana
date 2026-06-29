@@ -38,6 +38,8 @@ def export_drawio_to_pptx(drawio_xml_path: str, pptx_path: Optional[str] = None)
     from pptx import Presentation
     from pptx.dml.color import RGBColor
     from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE, MSO_CONNECTOR
+    from pptx.enum.text import MSO_VERTICAL_ANCHOR, PP_ALIGN
+    from pptx.oxml.xmlchemy import OxmlElement
     from pptx.util import Emu, Pt
 
     drawio_path = Path(drawio_xml_path)
@@ -65,11 +67,11 @@ def export_drawio_to_pptx(drawio_xml_path: str, pptx_path: Optional[str] = None)
             continue
         style = _parse_style(cell.get("style", ""))
         if cell.get("edge") == "1":
-            _add_edge(slide, geometry, style, MSO_CONNECTOR, RGBColor, Pt)
+            _add_edge(slide, geometry, style, MSO_CONNECTOR, RGBColor, Pt, OxmlElement)
         elif "image" in style:
             _add_image(slide, geometry, style, Emu)
         elif (cell.get("value") or "").strip() or style.get("text") is True:
-            _add_text(slide, cell, geometry, style, Emu, Pt, RGBColor)
+            _add_text(slide, cell, geometry, style, Emu, Pt, RGBColor, MSO_VERTICAL_ANCHOR, PP_ALIGN)
         elif cell.get("vertex") == "1":
             _add_shape(slide, geometry, style, MSO_AUTO_SHAPE_TYPE, Emu, Pt, RGBColor)
 
@@ -144,12 +146,22 @@ def _add_shape(slide, geometry: ET.Element, style: Dict[str, object], MSO_AUTO_S
         shape.line.width = Pt(float(style.get("strokeWidth", 1)))
 
 
-def _add_text(slide, cell: ET.Element, geometry: ET.Element, style: Dict[str, object], Emu, Pt, RGBColor) -> None:
+def _add_text(
+    slide, cell: ET.Element, geometry: ET.Element, style: Dict[str, object],
+    Emu, Pt, RGBColor, MSO_VERTICAL_ANCHOR, PP_ALIGN
+) -> None:
     x, y, w, h = _geometry_rect(geometry)
     textbox = slide.shapes.add_textbox(_emu(x, Emu), _emu(y, Emu), _emu(w, Emu), _emu(h, Emu))
     frame = textbox.text_frame
     frame.clear()
+    frame.margin_left = 0
+    frame.margin_right = 0
+    frame.margin_top = 0
+    frame.margin_bottom = 0
+    frame.vertical_anchor = MSO_VERTICAL_ANCHOR.MIDDLE
+    frame.word_wrap = False
     paragraph = frame.paragraphs[0]
+    paragraph.alignment = PP_ALIGN.CENTER
     run = paragraph.add_run()
     run.text = _clean_text(cell.get("value", ""))
     run.font.size = Pt(float(style.get("fontSize", 12)))
@@ -160,7 +172,7 @@ def _add_text(slide, cell: ET.Element, geometry: ET.Element, style: Dict[str, ob
         run.font.name = str(style["fontFamily"])
 
 
-def _add_edge(slide, geometry: ET.Element, style: Dict[str, object], MSO_CONNECTOR, RGBColor, Pt) -> None:
+def _add_edge(slide, geometry: ET.Element, style: Dict[str, object], MSO_CONNECTOR, RGBColor, Pt, OxmlElement) -> None:
     points = {p.get("as"): p for p in geometry.iter("mxPoint")}
     source = points.get("sourcePoint")
     target = points.get("targetPoint")
@@ -179,6 +191,25 @@ def _add_edge(slide, geometry: ET.Element, style: Dict[str, object], MSO_CONNECT
     if stroke_color is not None:
         connector.line.color.rgb = stroke_color
     connector.line.width = Pt(float(style.get("strokeWidth", 1)))
+    _apply_connector_arrowheads(connector, style, OxmlElement)
+
+
+def _apply_connector_arrowheads(connector, style: Dict[str, object], OxmlElement) -> None:
+    """Add PowerPoint arrowhead XML for draw.io edge styles."""
+    start_arrow = str(style.get("startArrow", "none"))
+    end_arrow = str(style.get("endArrow", "none"))
+    if start_arrow == "none" and end_arrow == "none":
+        return
+
+    line = connector._element.spPr.get_or_add_ln()
+    if start_arrow != "none":
+        head = OxmlElement("a:headEnd")
+        head.set("type", "triangle")
+        line.append(head)
+    if end_arrow != "none":
+        tail = OxmlElement("a:tailEnd")
+        tail.set("type", "triangle")
+        line.append(tail)
 
 
 def _clean_text(value: str) -> str:

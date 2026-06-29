@@ -331,6 +331,9 @@ class Pipeline:
             elem_type = elem.element_type.lower()
 
             if elem_type in {'arrow', 'line', 'connector'}:
+                if self._is_duplicate_line_fragment(elem, context.elements):
+                    elem.processing_notes.append("Skipped duplicate line fragment contained by an arrow")
+                    continue
                 elem.xml_fragment = self._generate_edge_xml(elem)
                 elem.layer_level = LayerLevel.ARROW.value
                 continue
@@ -372,6 +375,26 @@ class Pipeline:
             elem.xml_fragment = f'''<mxCell id="{elem.id}" parent="1" vertex="1" value="" style="{style}">
   <mxGeometry x="{elem.bbox.x1}" y="{elem.bbox.y1}" width="{elem.bbox.width}" height="{elem.bbox.height}" as="geometry"/>
 </mxCell>'''
+
+    def _is_duplicate_line_fragment(self, elem, elements) -> bool:
+        """Skip short line detections that are already part of an arrow mask."""
+        if elem.element_type.lower() != "line":
+            return False
+        line_box = elem.bbox.to_list()
+        line_area = max(1, elem.bbox.area)
+        for other in elements:
+            if other is elem or other.element_type.lower() not in {"arrow", "connector"}:
+                continue
+            other_box = other.bbox.to_list()
+            x1 = max(line_box[0], other_box[0])
+            y1 = max(line_box[1], other_box[1])
+            x2 = min(line_box[2], other_box[2])
+            y2 = min(line_box[3], other_box[3])
+            if x2 <= x1 or y2 <= y1:
+                continue
+            if ((x2 - x1) * (y2 - y1)) / line_area >= 0.65:
+                return True
+        return False
 
     def _generate_edge_xml(self, elem) -> str:
         """Generate an editable draw.io edge for arrows/lines/connectors."""
