@@ -364,6 +364,10 @@ class IconPictureProcessor(BaseProcessor):
         else:
             processed = cropped.convert("RGBA")
             elem.has_transparency = False
+            if self._is_card_like_crop(elem, (img_w, img_h)):
+                processed = self._clear_raster_border(processed)
+                elem.has_transparency = True
+                elem.processing_notes.append("Cleared raster card border; vector overlay border is authoritative")
         
         processed = self._apply_text_cutouts(processed, (x1, y1, x2, y2), text_bboxes or [])
 
@@ -383,6 +387,32 @@ class IconPictureProcessor(BaseProcessor):
         
         return is_rmbg
     
+
+
+    def _is_card_like_crop(self, elem: ElementInfo, image_size: tuple) -> bool:
+        """Whether an image crop is likely a diagram card/container rather than a standalone icon."""
+        img_w, img_h = image_size
+        canvas_area = max(1, img_w * img_h)
+        bbox = elem.bbox
+        aspect = max(bbox.width, bbox.height) / max(1, min(bbox.width, bbox.height))
+        area_ratio = bbox.area / canvas_area
+        return (area_ratio >= 0.015 or (bbox.width >= 160 and bbox.height >= 110)) and aspect <= 2.5
+
+    def _clear_raster_border(self, image: Image.Image) -> Image.Image:
+        """Remove the original raster card outline so only the vector border is visible."""
+        rgba = image.convert("RGBA")
+        arr = np.array(rgba)
+        h, w = arr.shape[:2]
+        margin = max(4, min(10, int(min(w, h) * 0.04)))
+        if margin <= 0 or w <= margin * 2 or h <= margin * 2:
+            return rgba
+
+        arr[:margin, :, 3] = 0
+        arr[-margin:, :, 3] = 0
+        arr[:, :margin, 3] = 0
+        arr[:, -margin:, 3] = 0
+        self._log(f"Cleared raster card border band: {margin}px")
+        return Image.fromarray(arr)
 
     def _should_use_rmbg(
         self,
