@@ -10,9 +10,17 @@ from typing import List, Dict, Any
 class FontSizeProcessor:
     """Compute font size from block height; optional clustering to unify nearby blocks."""
 
-    def __init__(self, formula_ratio: float = 0.6, text_offset: float = 1.0):
+    def __init__(
+        self,
+        formula_ratio: float = 0.6,
+        text_offset: float = 1.0,
+        text_height_ratio: float = 0.72,
+        max_body_font_size: float = 22.0,
+    ):
         self.formula_ratio = formula_ratio
         self.text_offset = text_offset
+        self.text_height_ratio = text_height_ratio
+        self.max_body_font_size = max_body_font_size
     
     def process(
         self, 
@@ -43,6 +51,7 @@ class FontSizeProcessor:
                 vertical_threshold_ratio, 
                 font_diff_threshold
             )
+            blocks = self.unify_body_text_size(blocks)
         
         return blocks
     
@@ -58,7 +67,11 @@ class FontSizeProcessor:
             if is_latex:
                 font_size = height * self.formula_ratio
             else:
-                font_size = height - self.text_offset
+                # OCR boxes describe glyph pixel height, not draw.io point size. 1:1
+                # mapping makes Chinese labels visibly too large, so use a conservative
+                # glyph-height ratio and cap common diagram labels.
+                font_size = min(height * self.text_height_ratio, height - self.text_offset)
+                font_size = min(font_size, self.max_body_font_size)
             
             block["font_size"] = max(font_size, 6)
             result.append(block)
@@ -116,6 +129,40 @@ class FontSizeProcessor:
         multi_groups = [g for g in groups.values() if len(g) > 1]
         if multi_groups and adjusted_count > 0:
             print(f"     Font size: unified {adjusted_count} blocks in {len(multi_groups)} groups")
+        return result
+
+    def unify_body_text_size(self, text_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Normalize similarly sized non-formula labels to one body size across a diagram."""
+        body_sizes = [
+            b.get("font_size", 12)
+            for b in text_blocks
+            if not b.get("is_latex") and b.get("font_size", 0) > 0
+        ]
+        if len(body_sizes) < 4:
+            return text_blocks
+
+        median_size = statistics.median(body_sizes)
+        if median_size <= 0:
+            return text_blocks
+
+        result = copy.deepcopy(text_blocks)
+        adjusted_count = 0
+        for block in result:
+            if block.get("is_latex"):
+                continue
+            size = block.get("font_size", median_size)
+            # Preserve real titles/annotations; normalize ordinary labels only.
+            if median_size * 0.55 <= size <= median_size * 1.65:
+                normalized = round(min(median_size, self.max_body_font_size), 1)
+                if abs(size - normalized) > 0.1:
+                    adjusted_count += 1
+                block["font_size"] = normalized
+
+        if adjusted_count:
+            print(
+                f"     Font size: globally normalized {adjusted_count} body labels "
+                f"to {min(median_size, self.max_body_font_size):.1f}pt"
+            )
         return result
 
     def _should_group(
