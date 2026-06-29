@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import yaml
 import warnings
+import time
 from PIL import Image
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -148,6 +149,20 @@ class ConfigLoader:
             },
         }
     
+    @staticmethod
+    def _merge_prompts(*prompt_lists: List[str]) -> List[str]:
+        """Merge prompt lists while preserving order and removing duplicates."""
+        merged = []
+        seen = set()
+        for prompts in prompt_lists:
+            for prompt in prompts or []:
+                prompt = str(prompt).strip()
+                if not prompt or prompt in seen:
+                    continue
+                seen.add(prompt)
+                merged.append(prompt)
+        return merged
+
     @classmethod
     def get_prompt_groups(cls) -> Dict[PromptGroup, PromptGroupConfig]:
         """从配置文件加载词组配置"""
@@ -173,10 +188,18 @@ class ConfigLoader:
         
         for key, enum_val in key_to_enum.items():
             if key in prompt_groups_config:
-                # 从映射关系获取提示词
-                prompts = prompt_mapping.get(key, [])
-                # 从config.yaml读取其他配置（阈值、面积、优先级等）
                 group_cfg = prompt_groups_config.get(key, {})
+                # Prompt text defaults live in prompts/*.py. Config can add
+                # project-specific prompts without losing the broad defaults that
+                # preserve recall; set replace_default_prompts: true to replace.
+                default_prompts = list(prompt_mapping.get(key, []))
+                configured_prompts = list(group_cfg.get('prompts') or [])
+                extra_prompts = list(group_cfg.get('extra_prompts') or [])
+                if group_cfg.get('replace_default_prompts'):
+                    prompts = configured_prompts or default_prompts
+                else:
+                    prompts = cls._merge_prompts(default_prompts, configured_prompts, extra_prompts)
+                # 从config.yaml读取其他配置（阈值、面积、优先级等）
                 result[enum_val] = PromptGroupConfig(
                     name=group_cfg.get('name', key),
                     prompts=prompts,
@@ -243,9 +266,10 @@ class SAM3Model(ModelWrapper):
             
         print(f"[SAM3Model] 加载模型中... (设备: {self.device})")
         
-        from sam3.model_builder import build_sam3_image_model
-        from sam3.model.sam3_image_processor import Sam3Processor
-        
+        from sam3_imports import import_sam3_image_components
+
+        build_sam3_image_model, Sam3Processor = import_sam3_image_components()
+
         with self._redirect_cuda_allocations_when_cpu_only():
             self._model = build_sam3_image_model(
                 bpe_path=self.bpe_path,
@@ -331,12 +355,27 @@ class SAM3Model(ModelWrapper):
         """
         if not self._is_loaded:
             self.load()
-        
+
+        predict_start = time.time()
+        print(
+            f"[SAM3Model] 准备图像状态: {image_path} "
+            f"(prompts={len(prompts)}, device={self.device})",
+            flush=True,
+        )
         with self._redirect_cuda_allocations_when_cpu_only():
             state, pil_image = self._get_image_state(image_path)
-        
+        print(
+            f"[SAM3Model] 图像状态完成: size={pil_image.size}, elapsed={time.time() - predict_start:.2f}s",
+            flush=True,
+        )
+
         results = []
-        for prompt in prompts:
+        for prompt_idx, prompt in enumerate(prompts, start=1):
+            prompt_start = time.time()
+            print(
+                f"[SAM3Model]   prompt {prompt_idx}/{len(prompts)}: {prompt!r} 开始",
+                flush=True,
+            )
             with self._redirect_cuda_allocations_when_cpu_only():
                 self._processor.reset_all_prompts(state)
                 result_state = self._processor.set_text_prompt(prompt=prompt, state=state)
@@ -346,6 +385,7 @@ class SAM3Model(ModelWrapper):
             scores = result_state.get("scores", [])
             
             num_masks = masks.shape[0] if (isinstance(masks, torch.Tensor) and masks.dim() > 0) else len(masks)
+            kept_before = len(results)
             
             for i in range(num_masks):
                 score = scores[i]
@@ -383,6 +423,12 @@ class SAM3Model(ModelWrapper):
                         'polygon': polygon,
                         'area': area
                     })
+            print(
+                f"[SAM3Model]   prompt {prompt_idx}/{len(prompts)}: {prompt!r} "
+                f"完成 masks={num_masks}, kept={len(results) - kept_before}, "
+                f"elapsed={time.time() - prompt_start:.2f}s",
+                flush=True,
+            )
         
         return results
     
