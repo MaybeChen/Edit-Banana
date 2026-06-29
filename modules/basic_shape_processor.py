@@ -1530,7 +1530,8 @@ class BasicShapeProcessor(BaseProcessor):
         # 运行检测
         h, w = cv2_image.shape[:2]
         cv_results = detect_rectangles_robust(cv2_image, sam3_elements, {
-            "min_area_ratio": 0.07,
+            # Diagram cards are small relative to the full canvas (~2-4% in common exports).
+            "min_area_ratio": 0.015,
             "max_area_ratio": 0.95
         })
         
@@ -1548,9 +1549,68 @@ class BasicShapeProcessor(BaseProcessor):
             new_elem = self._create_element_from_cv(item, start_id + added_count, "container", cv2_image)
             context.elements.append(new_elem)
             added_count += 1
+
+        added_count += self._add_container_shapes_from_card_crops(
+            context, cv2_image, start_id + added_count
+        )
         
         return added_count
     
+    def _add_container_shapes_from_card_crops(
+        self, context: ProcessingContext, cv2_image: np.ndarray, start_id: int
+    ) -> int:
+        """Use large SAM3 icon/card crops as container border hints when CV misses them."""
+        h, w = cv2_image.shape[:2]
+        canvas_area = max(1, h * w)
+        existing_shape_boxes = [
+            e.bbox.to_list()
+            for e in context.elements
+            if e.element_type.lower() in VECTOR_TYPES
+        ]
+        added_count = 0
+
+        for elem in list(context.elements):
+            elem_type = elem.element_type.lower()
+            if elem_type not in {"icon", "image", "picture", "logo"}:
+                continue
+
+            bbox = elem.bbox.to_list()
+            bw = max(0, bbox[2] - bbox[0])
+            bh = max(0, bbox[3] - bbox[1])
+            if bw <= 0 or bh <= 0:
+                continue
+
+            area_ratio = (bw * bh) / canvas_area
+            aspect = max(bw, bh) / max(1, min(bw, bh))
+            if area_ratio < 0.015 or aspect > 2.2:
+                continue
+
+            if any(calculate_iou(bbox, existing_box) > 0.80 for existing_box in existing_shape_boxes):
+                continue
+
+            item = {
+                "bbox": bbox,
+                "score": max(elem.score, 0.72),
+                "method": "sam3_card_bbox",
+                "is_rounded": True,
+                "fill_color": "none",
+                "stroke_color": "#000000",
+                "overlay_border": True,
+            }
+            new_elem = self._create_element_from_cv(
+                item, start_id + added_count, "container", cv2_image
+            )
+            new_elem.processing_notes.append(
+                f"由大图块bbox补充容器边框(area_ratio={area_ratio:.3f})"
+            )
+            context.elements.append(new_elem)
+            existing_shape_boxes.append(bbox)
+            added_count += 1
+
+        if added_count:
+            self._log(f"从大图块bbox补充了 {added_count} 个容器边框")
+        return added_count
+
     def _create_element_from_cv(self, item: dict, elem_id: int, elem_type: str, cv2_image: np.ndarray) -> ElementInfo:
         """从CV检测结果创建ElementInfo"""
         bbox = BoundingBox.from_list(item["bbox"])
@@ -1570,8 +1630,11 @@ class BasicShapeProcessor(BaseProcessor):
             source_prompt="cv_detection"
         )
         
-        # 设置层级
-        if elem_type == "container":
+        # 设置层级. Card overlay borders must sit above raster crops so the crisp
+        # vector stroke is visible; normal containers remain behind content.
+        if item.get("overlay_border"):
+            elem.layer_level = LayerLevel.ARROW.value
+        elif elem_type == "container":
             elem.layer_level = LayerLevel.BACKGROUND.value
         else:
             elem.layer_level = LayerLevel.BASIC_SHAPE.value

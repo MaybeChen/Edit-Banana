@@ -10,9 +10,17 @@ from typing import List, Dict, Any
 class FontSizeProcessor:
     """Compute font size from block height; optional clustering to unify nearby blocks."""
 
-    def __init__(self, formula_ratio: float = 0.6, text_offset: float = 1.0):
+    def __init__(
+        self,
+        formula_ratio: float = 0.6,
+        text_offset: float = 1.0,
+        text_height_ratio: float = 0.58,
+        max_body_font_size: float = 18.0,
+    ):
         self.formula_ratio = formula_ratio
         self.text_offset = text_offset
+        self.text_height_ratio = text_height_ratio
+        self.max_body_font_size = max_body_font_size
     
     def process(
         self, 
@@ -35,6 +43,7 @@ class FontSizeProcessor:
         """
         # 步骤 1: 计算初始字号
         blocks = self.calculate_font_sizes(text_blocks)
+        blocks = self.promote_title_text_sizes(blocks)
         
         # 步骤 2: 聚类统一
         if unify and len(blocks) > 1:
@@ -43,11 +52,17 @@ class FontSizeProcessor:
                 vertical_threshold_ratio, 
                 font_diff_threshold
             )
+            blocks = self.unify_body_text_size(blocks)
         
         return blocks
     
     def calculate_font_sizes(self, text_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Set font_size from block height (text: height - offset; formula: height * ratio)."""
+        """Set draw.io fontSize from OCR bbox height.
+
+        Draw.io uses point-like font sizes while OCR geometry is in source-image
+        pixels. Using the raw bbox height makes exported text larger than the
+        original glyphs; the default ratio keeps rendered text inside the OCR box.
+        """
         result = []
         for block in text_blocks:
             block = copy.copy(block)
@@ -58,10 +73,75 @@ class FontSizeProcessor:
             if is_latex:
                 font_size = height * self.formula_ratio
             else:
-                font_size = height - self.text_offset
+                # OCR boxes are source-image pixels; draw.io fontSize is point-like
+                # and line-height adds extra visual height. Keep text inside its OCR
+                # geometry to preserve relative size/layout in the original image.
+                font_size = min(height * self.text_height_ratio, height - self.text_offset)
+                font_size = min(font_size, self.max_body_font_size)
             
             block["font_size"] = max(font_size, 6)
             result.append(block)
+        return result
+
+
+    def promote_title_text_sizes(self, text_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Preserve large/top-level title text instead of capping it to body size.
+
+        OCR bbox heights are used for sizing, but diagram titles are often much
+        taller than body labels and are located near the top of the canvas. The
+        body cap keeps labels stable; this pass restores title-like blocks so
+        the relative hierarchy is closer to the source image and PPTX export.
+        """
+        if not text_blocks:
+            return text_blocks
+
+        heights = [
+            b.get("geometry", {}).get("height", 0)
+            for b in text_blocks
+            if not b.get("is_latex") and b.get("geometry", {}).get("height", 0) > 0
+        ]
+        if not heights:
+            return text_blocks
+
+        median_height = statistics.median(heights)
+        max_right = max(
+            b.get("geometry", {}).get("x", 0) + b.get("geometry", {}).get("width", 0)
+            for b in text_blocks
+        )
+        max_bottom = max(
+            b.get("geometry", {}).get("y", 0) + b.get("geometry", {}).get("height", 0)
+            for b in text_blocks
+        )
+        canvas_w = max(1, max_right)
+        canvas_h = max(1, max_bottom)
+
+        result = copy.deepcopy(text_blocks)
+        promoted_count = 0
+        for block in result:
+            if block.get("is_latex") or block.get("text_role") == "title":
+                continue
+            geo = block.get("geometry", {})
+            height = geo.get("height", 0)
+            width = geo.get("width", 0)
+            y = geo.get("y", 0)
+            text = str(block.get("text", "")).strip()
+            if not text or height <= 0:
+                continue
+
+            top_band = y <= canvas_h * 0.16
+            wide_heading = width >= canvas_w * 0.22
+            large_heading = height >= median_height * 1.55
+            short_label = len(text) <= 36
+            if (large_heading and short_label) or (top_band and wide_heading and height >= median_height * 1.15):
+                title_size = min(max(height * 0.72, block.get("font_size", 0)), 44.0)
+                if title_size > block.get("font_size", 0) + 0.1:
+                    block["font_size"] = round(title_size, 1)
+                    block["font_weight"] = block.get("font_weight") or "bold"
+                    block["text_role"] = "title"
+                    promoted_count += 1
+
+        if promoted_count:
+            print(f"     Font size: preserved {promoted_count} title/header blocks")
         return result
 
     def unify_by_clustering(
@@ -118,6 +198,40 @@ class FontSizeProcessor:
             print(f"     Font size: unified {adjusted_count} blocks in {len(multi_groups)} groups")
         return result
 
+    def unify_body_text_size(self, text_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Normalize similarly sized non-formula labels to one body size across a diagram."""
+        body_sizes = [
+            b.get("font_size", 12)
+            for b in text_blocks
+            if not b.get("is_latex") and b.get("font_size", 0) > 0
+        ]
+        if len(body_sizes) < 4:
+            return text_blocks
+
+        median_size = statistics.median(body_sizes)
+        if median_size <= 0:
+            return text_blocks
+
+        result = copy.deepcopy(text_blocks)
+        adjusted_count = 0
+        for block in result:
+            if block.get("is_latex") or block.get("text_role") == "title":
+                continue
+            size = block.get("font_size", median_size)
+            # Preserve real titles/annotations; normalize ordinary labels only.
+            if median_size * 0.55 <= size <= median_size * 1.65:
+                normalized = round(min(median_size, self.max_body_font_size), 1)
+                if abs(size - normalized) > 0.1:
+                    adjusted_count += 1
+                block["font_size"] = normalized
+
+        if adjusted_count:
+            print(
+                f"     Font size: globally normalized {adjusted_count} body labels "
+                f"to {min(median_size, self.max_body_font_size):.1f}pt"
+            )
+        return result
+
     def _should_group(
         self, 
         block_a: Dict, 
@@ -126,6 +240,8 @@ class FontSizeProcessor:
         font_diff_threshold: float
     ) -> bool:
         """判断两个文字块是否应该分到同一组"""
+        if block_a.get("text_role") == "title" or block_b.get("text_role") == "title":
+            return False
         geo_a = block_a.get("geometry", {})
         geo_b = block_b.get("geometry", {})
         
