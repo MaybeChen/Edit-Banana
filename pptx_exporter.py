@@ -125,10 +125,13 @@ def _add_image(slide, geometry: ET.Element, style: Dict[str, object], Emu) -> No
 def _add_shape(slide, geometry: ET.Element, style: Dict[str, object], MSO_AUTO_SHAPE_TYPE, Emu, Pt, RGBColor) -> None:
     x, y, w, h = _geometry_rect(geometry)
     shape_type = MSO_AUTO_SHAPE_TYPE.RECTANGLE
+    shape_name = str(style.get("shape", ""))
     if style.get("rounded") == "1":
         shape_type = MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE
-    if "ellipse" in style or style.get("shape") in {"ellipse", "cloud"}:
+    if "ellipse" in style or shape_name in {"ellipse", "cloud"}:
         shape_type = MSO_AUTO_SHAPE_TYPE.OVAL
+    if shape_name in {"cylinder", "cylinder3", "database"}:
+        shape_type = getattr(MSO_AUTO_SHAPE_TYPE, "CAN", shape_type)
 
     shape = slide.shapes.add_shape(shape_type, _emu(x, Emu), _emu(y, Emu), _emu(w, Emu), _emu(h, Emu))
     fill_color = _rgb(str(style.get("fillColor", "#ffffff")), RGBColor)
@@ -159,12 +162,25 @@ def _add_text(
     frame.margin_top = 0
     frame.margin_bottom = 0
     frame.vertical_anchor = MSO_VERTICAL_ANCHOR.MIDDLE
-    frame.word_wrap = False
+    frame.word_wrap = str(style.get("whiteSpace", "wrap")) != "nowrap"
     paragraph = frame.paragraphs[0]
-    paragraph.alignment = PP_ALIGN.CENTER
+    align = str(style.get("align", "center"))
+    if align == "left":
+        paragraph.alignment = PP_ALIGN.LEFT
+    elif align == "right":
+        paragraph.alignment = PP_ALIGN.RIGHT
+    else:
+        paragraph.alignment = PP_ALIGN.CENTER
     run = paragraph.add_run()
     run.text = _clean_text(cell.get("value", ""))
     run.font.size = Pt(float(style.get("fontSize", 12)))
+    font_style = str(style.get("fontStyle", "0"))
+    try:
+        font_style_value = int(font_style)
+    except ValueError:
+        font_style_value = 0
+    run.font.bold = bool(font_style_value & 1)
+    run.font.italic = bool(font_style_value & 2)
     font_color = _rgb(str(style.get("fontColor", "#000000")), RGBColor)
     if font_color is not None:
         run.font.color.rgb = font_color
@@ -191,8 +207,23 @@ def _add_edge(slide, geometry: ET.Element, style: Dict[str, object], MSO_CONNECT
     if stroke_color is not None:
         connector.line.color.rgb = stroke_color
     connector.line.width = Pt(float(style.get("strokeWidth", 1)))
+    _apply_connector_dash(connector, style, OxmlElement)
     _apply_connector_arrowheads(connector, style, OxmlElement)
 
+
+
+def _apply_connector_dash(connector, style: Dict[str, object], OxmlElement) -> None:
+    """Apply draw.io dashed connector styles to PowerPoint DrawingML."""
+    dashed = str(style.get("dashed", "0")) == "1" or "dashPattern" in style
+    if not dashed:
+        return
+    line = connector._element.spPr.get_or_add_ln()
+    for child in list(line):
+        if child.tag.endswith("}prstDash"):
+            line.remove(child)
+    dash = OxmlElement("a:prstDash")
+    dash.set("val", "dash")
+    line.append(dash)
 
 def _apply_connector_arrowheads(connector, style: Dict[str, object], OxmlElement) -> None:
     """Add PowerPoint arrowhead XML for draw.io edge styles."""

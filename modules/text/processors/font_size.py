@@ -43,6 +43,7 @@ class FontSizeProcessor:
         """
         # 步骤 1: 计算初始字号
         blocks = self.calculate_font_sizes(text_blocks)
+        blocks = self.promote_title_text_sizes(blocks)
         
         # 步骤 2: 聚类统一
         if unify and len(blocks) > 1:
@@ -80,6 +81,67 @@ class FontSizeProcessor:
             
             block["font_size"] = max(font_size, 6)
             result.append(block)
+        return result
+
+
+    def promote_title_text_sizes(self, text_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Preserve large/top-level title text instead of capping it to body size.
+
+        OCR bbox heights are used for sizing, but diagram titles are often much
+        taller than body labels and are located near the top of the canvas. The
+        body cap keeps labels stable; this pass restores title-like blocks so
+        the relative hierarchy is closer to the source image and PPTX export.
+        """
+        if not text_blocks:
+            return text_blocks
+
+        heights = [
+            b.get("geometry", {}).get("height", 0)
+            for b in text_blocks
+            if not b.get("is_latex") and b.get("geometry", {}).get("height", 0) > 0
+        ]
+        if not heights:
+            return text_blocks
+
+        median_height = statistics.median(heights)
+        max_right = max(
+            b.get("geometry", {}).get("x", 0) + b.get("geometry", {}).get("width", 0)
+            for b in text_blocks
+        )
+        max_bottom = max(
+            b.get("geometry", {}).get("y", 0) + b.get("geometry", {}).get("height", 0)
+            for b in text_blocks
+        )
+        canvas_w = max(1, max_right)
+        canvas_h = max(1, max_bottom)
+
+        result = copy.deepcopy(text_blocks)
+        promoted_count = 0
+        for block in result:
+            if block.get("is_latex") or block.get("text_role") == "title":
+                continue
+            geo = block.get("geometry", {})
+            height = geo.get("height", 0)
+            width = geo.get("width", 0)
+            y = geo.get("y", 0)
+            text = str(block.get("text", "")).strip()
+            if not text or height <= 0:
+                continue
+
+            top_band = y <= canvas_h * 0.16
+            wide_heading = width >= canvas_w * 0.22
+            large_heading = height >= median_height * 1.55
+            short_label = len(text) <= 36
+            if (large_heading and short_label) or (top_band and wide_heading and height >= median_height * 1.15):
+                title_size = min(max(height * 0.72, block.get("font_size", 0)), 44.0)
+                if title_size > block.get("font_size", 0) + 0.1:
+                    block["font_size"] = round(title_size, 1)
+                    block["font_weight"] = block.get("font_weight") or "bold"
+                    block["text_role"] = "title"
+                    promoted_count += 1
+
+        if promoted_count:
+            print(f"     Font size: preserved {promoted_count} title/header blocks")
         return result
 
     def unify_by_clustering(
@@ -153,7 +215,7 @@ class FontSizeProcessor:
         result = copy.deepcopy(text_blocks)
         adjusted_count = 0
         for block in result:
-            if block.get("is_latex"):
+            if block.get("is_latex") or block.get("text_role") == "title":
                 continue
             size = block.get("font_size", median_size)
             # Preserve real titles/annotations; normalize ordinary labels only.
@@ -178,6 +240,8 @@ class FontSizeProcessor:
         font_diff_threshold: float
     ) -> bool:
         """判断两个文字块是否应该分到同一组"""
+        if block_a.get("text_role") == "title" or block_b.get("text_role") == "title":
+            return False
         geo_a = block_a.get("geometry", {})
         geo_b = block_b.get("geometry", {})
         

@@ -334,7 +334,7 @@ class Pipeline:
                 if self._is_duplicate_line_fragment(elem, context.elements):
                     elem.processing_notes.append("Skipped duplicate line fragment contained by an arrow")
                     continue
-                elem.xml_fragment = self._generate_edge_xml(elem)
+                elem.xml_fragment = self._generate_edge_xml(elem, context)
                 elem.layer_level = LayerLevel.ARROW.value
                 continue
             
@@ -396,15 +396,17 @@ class Pipeline:
                 return True
         return False
 
-    def _generate_edge_xml(self, elem) -> str:
+    def _generate_edge_xml(self, elem, context: ProcessingContext = None) -> str:
         """Generate an editable draw.io edge for arrows/lines/connectors."""
         elem_type = elem.element_type.lower()
         start, end = self._infer_edge_points(elem)
         end_arrow = "classic" if elem_type == "arrow" else "none"
+        dashed = self._edge_looks_dashed(elem, context)
+        dash_style = "dashed=1;dashPattern=3 3;" if dashed else ""
         style = (
             "endArrow={};startArrow=none;html=1;rounded=0;"
-            "strokeColor=#000000;strokeWidth=2;fillColor=none;"
-        ).format(end_arrow)
+            "strokeColor=#000000;strokeWidth=2;fillColor=none;{}"
+        ).format(end_arrow, dash_style)
         elem.arrow_start = start
         elem.arrow_end = end
         return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}">
@@ -413,6 +415,55 @@ class Pipeline:
     <mxPoint x="{round(end[0], 2)}" y="{round(end[1], 2)}" as="targetPoint"/>
   </mxGeometry>
 </mxCell>'''
+
+
+    def _edge_looks_dashed(self, elem, context: ProcessingContext = None) -> bool:
+        """Heuristically detect dashed/dotted connectors from the source crop.
+
+        SAM3 only returns element type and geometry, so dashed source lines need a
+        lightweight pixel check before DrawIO/PPTX export. We sample the long axis
+        of thin line/connector detections and mark it dashed when ink occupancy is
+        broken into several separated runs.
+        """
+        if elem.element_type.lower() not in {"line", "connector"}:
+            return False
+        if context is None or not getattr(context, "image_path", None):
+            return False
+        bbox = elem.bbox
+        if max(bbox.width, bbox.height) < 40:
+            return False
+        try:
+            from PIL import Image
+            import numpy as np
+            with Image.open(context.image_path) as img:
+                gray = img.convert("L")
+                x1, y1, x2, y2 = map(int, bbox.to_list())
+                pad = 3
+                x1 = max(0, x1 - pad)
+                y1 = max(0, y1 - pad)
+                x2 = min(gray.width, x2 + pad)
+                y2 = min(gray.height, y2 + pad)
+                crop = np.array(gray.crop((x1, y1, x2, y2)))
+            if crop.size == 0:
+                return False
+            ink = crop < 180
+            profile = ink.any(axis=0) if bbox.width >= bbox.height else ink.any(axis=1)
+            runs = []
+            run = 0
+            for value in profile:
+                if bool(value):
+                    run += 1
+                elif run:
+                    runs.append(run)
+                    run = 0
+            if run:
+                runs.append(run)
+            if len(runs) < 3:
+                return False
+            coverage = sum(runs) / max(1, len(profile))
+            return coverage < 0.72
+        except Exception:
+            return False
 
     def _infer_edge_points(self, elem) -> tuple:
         """Infer connector endpoints from SAM3 bbox/polygon, preserving arrow direction where possible."""

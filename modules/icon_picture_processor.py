@@ -399,19 +399,41 @@ class IconPictureProcessor(BaseProcessor):
         return (area_ratio >= 0.015 or (bbox.width >= 160 and bbox.height >= 110)) and aspect <= 2.5
 
     def _clear_raster_border(self, image: Image.Image) -> Image.Image:
-        """Remove the original raster card outline so only the vector border is visible."""
+        """Remove raster card outlines before vector border overlay.
+
+        SAM3/card bboxes are often a few pixels outside the real rounded border. A
+        fixed edge strip leaves inset dark arcs behind, creating doubled/fuzzy
+        borders. Detect the first dark border bands near each side and clear up to
+        that band so the vector overlay is the only visible card outline.
+        """
         rgba = image.convert("RGBA")
         arr = np.array(rgba)
         h, w = arr.shape[:2]
-        margin = max(4, min(10, int(min(w, h) * 0.04)))
-        if margin <= 0 or w <= margin * 2 or h <= margin * 2:
+        if w < 8 or h < 8:
             return rgba
 
-        arr[:margin, :, 3] = 0
-        arr[-margin:, :, 3] = 0
-        arr[:, :margin, 3] = 0
-        arr[:, -margin:, 3] = 0
-        self._log(f"Cleared raster card border band: {margin}px")
+        gray = (0.299 * arr[:, :, 0] + 0.587 * arr[:, :, 1] + 0.114 * arr[:, :, 2])
+        dark = (gray < 185) & (arr[:, :, 3] > 0)
+        max_scan = max(4, min(24, int(min(w, h) * 0.12)))
+
+        def border_extent(profile):
+            hits = np.where(profile[:max_scan] > 0.025)[0]
+            return int(hits[-1] + 2) if hits.size else max(4, min(10, int(min(w, h) * 0.04)))
+
+        top = border_extent(dark.mean(axis=1))
+        bottom = border_extent(dark[::-1, :].mean(axis=1))
+        left = border_extent(dark.mean(axis=0))
+        right = border_extent(dark[:, ::-1].mean(axis=0))
+
+        top = min(top, h // 3)
+        bottom = min(bottom, h // 3)
+        left = min(left, w // 3)
+        right = min(right, w // 3)
+        arr[:top, :, 3] = 0
+        arr[h - bottom:, :, 3] = 0
+        arr[:, :left, 3] = 0
+        arr[:, w - right:, 3] = 0
+        self._log(f"Cleared raster card border bands: top={top}, right={right}, bottom={bottom}, left={left}px")
         return Image.fromarray(arr)
 
     def _should_use_rmbg(
