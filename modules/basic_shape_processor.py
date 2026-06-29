@@ -1505,6 +1505,10 @@ class BasicShapeProcessor(BaseProcessor):
         stroke_color = style_data["stroke_color"]
         stroke_width = style_data["stroke_width"]
         
+        # Use transparent fills for vectorized diagram shapes so nested raster/OCR
+        # details are not covered when SAM3 detects an inner module as a rectangle.
+        if elem_type in {"rectangle", "rounded rectangle", "rounded_rectangle", "container", "cylinder"}:
+            fill_color = "none"
         style = f"{base_style}fillColor={fill_color};strokeColor={stroke_color};strokeWidth={stroke_width};"
         
         # DrawIO的id必须从2开始（0和1是保留的根元素）
@@ -1791,6 +1795,10 @@ def process_basic_shapes(image: np.ndarray, sam3_elements: dict) -> str:
                 elif elem_type == "triangle" and "direction" in geo_params:
                     base_style += f"direction={geo_params['direction']};"
             
+            # Use transparent fills for vectorized diagram shapes so nested raster/OCR
+            # details are not covered when SAM3 detects an inner module as a rectangle.
+            if elem_type in {"rectangle", "rounded rectangle", "rounded_rectangle", "container", "cylinder"}:
+                fill_color = "none"
             style = f"{base_style}fillColor={fill_color};strokeColor={stroke_color};strokeWidth={stroke_width};"
             
             cell = ET.SubElement(root, "mxCell", {

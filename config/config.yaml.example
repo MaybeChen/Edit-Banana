@@ -33,6 +33,7 @@ prompt_groups:
     prompts:
       - straight arrow
       - arrow with arrowhead
+      - dashed arrow
       - directed connector
       - straight connector line
       - thin connector line
@@ -53,6 +54,8 @@ prompt_groups:
       - circle node
       - circular node
       - ellipse node
+      - database
+      - cylindrical database
       - database cylinder
       - diamond shape
       - triangle shape

@@ -16,5 +16,7 @@ SHAPE_PROMPT = [
     "circle node",
     "circular node",
     "ellipse node",
+    "database",
+    "cylindrical database",
     "database cylinder",
 ]

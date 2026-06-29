@@ -401,7 +401,7 @@ class Pipeline:
         elem_type = elem.element_type.lower()
         start, end = self._infer_edge_points(elem)
         end_arrow = "classic" if elem_type == "arrow" else "none"
-        dashed = self._edge_looks_dashed(elem, context)
+        dashed = elem.line_style == "dashed" or self._edge_looks_dashed(elem, context)
         dash_style = "dashed=1;dashPattern=3 3;" if dashed else ""
         style = (
             "endArrow={};startArrow=none;html=1;rounded=0;"
@@ -425,7 +425,7 @@ class Pipeline:
         of thin line/connector detections and mark it dashed when ink occupancy is
         broken into several separated runs.
         """
-        if elem.element_type.lower() not in {"line", "connector"}:
+        if elem.element_type.lower() not in {"arrow", "line", "connector"}:
             return False
         if context is None or not getattr(context, "image_path", None):
             return False

@@ -723,6 +723,44 @@ class Sam3InfoExtractor(BaseProcessor):
         
         return filtered
     
+
+    @staticmethod
+    def _normalize_prompt_element_type(prompt: str) -> tuple[str, Optional[str]]:
+        """Map descriptive SAM3 prompts back to canonical element types.
+
+        Descriptive prompts such as "dotted connector line" improve SAM3 recall,
+        but downstream processors expect canonical types like connector/cylinder.
+        Return (element_type, line_style).
+        """
+        text = (prompt or "").lower().strip()
+        line_style = "dashed" if any(token in text for token in ("dashed", "dotted", "dot")) else None
+
+        if "arrow" in text:
+            return "arrow", line_style
+        if "connector" in text or "line" in text:
+            return "connector", line_style
+        if "cylinder" in text or "database" in text:
+            return "cylinder", None
+        if "circle" in text:
+            return "circle", None
+        if "ellipse" in text:
+            return "ellipse", None
+        if "rounded rectangle" in text or "card" in text or "box" in text:
+            return "rounded rectangle", None
+        if "rectangle" in text:
+            return "rectangle", None
+        if "diamond" in text:
+            return "diamond", None
+        if "triangle" in text:
+            return "triangle", None
+        if "hexagon" in text:
+            return "hexagon", None
+        if "panel" in text or "container" in text or "background" in text or "frame" in text or "boundary" in text:
+            return "container", None
+        if "icon" in text or "symbol" in text or "logo" in text or "chart" in text or "picture" in text:
+            return "icon", None
+        return text, line_style
+
     def _convert_to_elements(self, raw_results: List[Dict], 
                              start_id: int = 0,
                              source_group: str = "",
@@ -733,16 +771,20 @@ class Sam3InfoExtractor(BaseProcessor):
         for i, item in enumerate(raw_results):
             bbox = BoundingBox.from_list(item['bbox'])
             
+            element_type, line_style = self._normalize_prompt_element_type(item['prompt'])
             element = ElementInfo(
                 id=start_id + i,
-                element_type=item['prompt'],
+                element_type=element_type,
                 bbox=bbox,
                 score=item['score'],
                 polygon=item['polygon'],
                 mask=item['mask'],
                 source_prompt=item['prompt']
             )
+            if line_style:
+                element.line_style = line_style
             
+            element.processing_notes.append(f"source_prompt={item['prompt']}")
             element.processing_notes.append(f"source_group={source_group}")
             element.processing_notes.append(f"area={item.get('area', bbox.area)}")
             element._group_priority = group_priority

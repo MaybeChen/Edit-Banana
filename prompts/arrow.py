@@ -6,6 +6,7 @@ ARROW_PROMPT = [
     "connector",
     "straight arrow",
     "arrow with arrowhead",
+    "dashed arrow",
     "directed connector",
     "straight connector line",
     "thin connector line",
