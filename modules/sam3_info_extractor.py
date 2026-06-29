@@ -174,10 +174,11 @@ class ConfigLoader:
         
         for key, enum_val in key_to_enum.items():
             if key in prompt_groups_config:
-                # 从映射关系获取提示词
-                prompts = prompt_mapping.get(key, [])
-                # 从config.yaml读取其他配置（阈值、面积、优先级等）
                 group_cfg = prompt_groups_config.get(key, {})
+                # Prompt text defaults live in prompts/*.py, but config.yaml can
+                # override them for per-project tuning without code changes.
+                prompts = group_cfg.get('prompts') or prompt_mapping.get(key, [])
+                # 从config.yaml读取其他配置（阈值、面积、优先级等）
                 result[enum_val] = PromptGroupConfig(
                     name=group_cfg.get('name', key),
                     prompts=prompts,

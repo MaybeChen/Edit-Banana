@@ -10,25 +10,62 @@ sam3:
   epsilon_factor: 0.02
   min_area: 100
 
-# Prompt groups: prompts are also defined in prompts/*.py; here you set thresholds per group.
+# Prompt groups: prompts default to prompts/*.py; optional prompts below override those defaults.
 prompt_groups:
   image:
     name: image
+    prompts:
+      - standalone icon
+      - line art icon
+      - system icon
+      - agent icon
+      - database icon
+      - warning icon
+      - small chart icon
+      - diagram symbol
     score_threshold: 0.5
     min_area: 100
     priority: 2
   arrow:
     name: arrow
+    prompts:
+      - straight arrow
+      - arrow with arrowhead
+      - directed connector
+      - straight connector line
+      - thin connector line
+      - dashed connector line
+      - dotted connector line
+      - line connecting diagram nodes
     score_threshold: 0.45
     min_area: 50
     priority: 4
   shape:
     name: shape
+    prompts:
+      - rounded rectangle card
+      - rectangular card
+      - outlined card
+      - diagram box
+      - circle node
+      - circular node
+      - ellipse node
+      - database cylinder
+      - diamond shape
+      - triangle shape
+      - hexagon shape
     score_threshold: 0.5
     min_area: 200
     priority: 3
   background:
     name: background
+    prompts:
+      - outer container panel
+      - section panel
+      - group container
+      - large rounded rectangle panel
+      - background frame
+      - diagram boundary box
     score_threshold: 0.25
     min_area: 500
     priority: 1
