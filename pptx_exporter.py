@@ -7,6 +7,7 @@ source draw.io element is editable, and embeds raster crops as pictures.
 
 import base64
 import html
+import importlib.util
 import io
 import re
 import xml.etree.ElementTree as ET
@@ -17,8 +18,21 @@ from typing import Dict, Optional, Tuple
 EMU_PER_PX = 9525  # PowerPoint uses EMUs; 96dpi pixel -> 914400 / 96.
 
 
+def is_pptx_export_available() -> bool:
+    """Return whether the optional python-pptx runtime dependency is installed."""
+    return importlib.util.find_spec("pptx") is not None
+
+
+def missing_pptx_dependency_message() -> str:
+    """Human-friendly install hint for PPTX export."""
+    return "PPTX export requires python-pptx. Install it with: pip install python-pptx>=1.0.2"
+
+
 def export_drawio_to_pptx(drawio_xml_path: str, pptx_path: Optional[str] = None) -> str:
     """Create a PPTX file from a merged draw.io XML file and return its path."""
+    if not is_pptx_export_available():
+        raise RuntimeError(missing_pptx_dependency_message())
+
     # Imported lazily so the rest of the pipeline can still be used by tooling that
     # only performs syntax checks. `python-pptx` is listed in requirements.txt.
     from pptx import Presentation

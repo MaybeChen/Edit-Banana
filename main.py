@@ -299,10 +299,18 @@ class Pipeline:
 
             if output_path:
                 print("\n[8] PowerPoint export...")
-                from pptx_exporter import export_drawio_to_pptx
-                pptx_path = export_drawio_to_pptx(output_path)
-                context.intermediate_results['pptx_output'] = pptx_path
-                print(f"   PPTX: {pptx_path}")
+                from pptx_exporter import (
+                    export_drawio_to_pptx,
+                    is_pptx_export_available,
+                    missing_pptx_dependency_message,
+                )
+                if is_pptx_export_available():
+                    pptx_path = export_drawio_to_pptx(output_path)
+                    context.intermediate_results['pptx_output'] = pptx_path
+                    print(f"   PPTX: {pptx_path}")
+                else:
+                    context.intermediate_results['pptx_output'] = None
+                    print(f"   PPTX skipped: {missing_pptx_dependency_message()}")
 
             print(f"\n{'='*60}\nDone.\n{'='*60}")
             
