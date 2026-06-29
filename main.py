@@ -69,6 +69,28 @@ def load_config() -> dict:
             'paths': {
                 'input_dir': './input',
                 'output_dir': './output',
+            },
+            'ocr': {
+                'engine': 'paddleocr',
+                'paddleocr': {
+                    'lang': 'ch',
+                    'use_angle_cls': False,
+                    'allow_download': True,
+                    'allow_fallback_to_tesseract': False,
+                    'allow_legacy_fallback': False,
+                    'ocr_version': 'PP-OCRv6',
+                    'text_detection_model_name': 'PP-OCRv6_medium_det',
+                    'text_recognition_model_name': 'PP-OCRv6_medium_rec',
+                    'textline_orientation_model_name': 'PP-LCNet_x1_0_textline_ori',
+                    'text_det_limit_side_len': 64,
+                    'text_det_limit_type': 'min',
+                    'text_det_thresh': 0.3,
+                    'text_det_box_thresh': 0.6,
+                    'text_det_unclip_ratio': 1.5,
+                    'text_rec_score_thresh': 0.0,
+                    'scale': 1.0,
+                    'min_confidence': 0.30,
+                },
             }
         }
     
@@ -95,7 +117,7 @@ class Pipeline:
         """OCR/text step; None if deps missing."""
         if self._text_restorer is None and TextRestorer is not None:
             ocr_config = self.config.get("ocr") or {}
-            ocr_engine = ocr_config.get("engine", "tesseract")
+            ocr_engine = os.environ.get("OCR_ENGINE", ocr_config.get("engine", "paddleocr"))
             self._text_restorer = TextRestorer(
                 formula_engine="none",
                 ocr_engine=ocr_engine,
@@ -179,6 +201,14 @@ class Pipeline:
                         f.write(text_xml_content)
                     context.intermediate_results['text_xml'] = text_xml_content
                     print(f"   Saved: {text_output_path}")
+                    if hasattr(self.text_restorer, "save_ocr_artifacts"):
+                        ocr_artifact_path = self.text_restorer.save_ocr_artifacts(img_output_dir, image_path)
+                        context.intermediate_results['ocr_result_json'] = ocr_artifact_path
+                        print(f"   OCR result: {ocr_artifact_path}")
+                    if hasattr(self.text_restorer, "save_ocr_overlay"):
+                        ocr_overlay_path = self.text_restorer.save_ocr_overlay(img_output_dir, image_path)
+                        context.intermediate_results['ocr_overlay'] = ocr_overlay_path
+                        print(f"   OCR overlay: {ocr_overlay_path}")
                 except Exception as e:
                     print(f"   Text step failed: {e}")
                     print("   Continuing without text...")
@@ -266,6 +296,14 @@ class Pipeline:
             
             output_path = merge_result.metadata.get('output_path')
             print(f"   Output: {output_path}")
+
+            if output_path:
+                print("\n[8] PowerPoint export...")
+                from pptx_exporter import export_drawio_to_pptx
+                pptx_path = export_drawio_to_pptx(output_path)
+                context.intermediate_results['pptx_output'] = pptx_path
+                print(f"   PPTX: {pptx_path}")
+
             print(f"\n{'='*60}\nDone.\n{'='*60}")
             
             return output_path
@@ -277,19 +315,24 @@ class Pipeline:
             return None
     
     def _generate_xml_fragments(self, context: ProcessingContext):
-        """Generate XML for elements that do not have one yet. Arrows are treated as icon (image crop)."""
+        """Generate XML for elements that do not have one yet."""
         for elem in context.elements:
             if elem.has_xml():
                 continue
             
             elem_type = elem.element_type.lower()
+
+            if elem_type in {'arrow', 'line', 'connector'}:
+                elem.xml_fragment = self._generate_edge_xml(elem)
+                elem.layer_level = LayerLevel.ARROW.value
+                continue
             
-            if elem_type in {'icon', 'picture', 'logo', 'chart', 'function_graph', 'arrow', 'line', 'connector'}:
-                # Image/arrow: use base64 image
+            if elem_type in {'icon', 'picture', 'logo', 'chart', 'function_graph'}:
+                # Image/icon: use base64 crop. Connectors are handled above as editable vectors.
                 if elem.base64:
                     style = f"shape=image;imageAspect=0;aspect=fixed;verticalLabelPosition=bottom;verticalAlign=top;image=data:image/png,{elem.base64}"
                 else:
-                    style = "rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;"
+                    style = "rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;"
                 elem.layer_level = LayerLevel.IMAGE.value
                 
             elif elem_type in {'section_panel', 'title_bar'}:
@@ -321,6 +364,70 @@ class Pipeline:
             elem.xml_fragment = f'''<mxCell id="{elem.id}" parent="1" vertex="1" value="" style="{style}">
   <mxGeometry x="{elem.bbox.x1}" y="{elem.bbox.y1}" width="{elem.bbox.width}" height="{elem.bbox.height}" as="geometry"/>
 </mxCell>'''
+
+    def _generate_edge_xml(self, elem) -> str:
+        """Generate an editable draw.io edge for arrows/lines/connectors."""
+        elem_type = elem.element_type.lower()
+        start, end = self._infer_edge_points(elem)
+        end_arrow = "classic" if elem_type == "arrow" else "none"
+        style = (
+            "endArrow={};startArrow=none;html=1;rounded=0;"
+            "strokeColor=#000000;strokeWidth=2;fillColor=none;"
+        ).format(end_arrow)
+        elem.arrow_start = start
+        elem.arrow_end = end
+        return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}">
+  <mxGeometry relative="1" as="geometry">
+    <mxPoint x="{round(start[0], 2)}" y="{round(start[1], 2)}" as="sourcePoint"/>
+    <mxPoint x="{round(end[0], 2)}" y="{round(end[1], 2)}" as="targetPoint"/>
+  </mxGeometry>
+</mxCell>'''
+
+    def _infer_edge_points(self, elem) -> tuple:
+        """Infer connector endpoints from SAM3 bbox/polygon, preserving arrow direction where possible."""
+        bbox = elem.bbox
+        cx = (bbox.x1 + bbox.x2) / 2
+        cy = (bbox.y1 + bbox.y2) / 2
+        elem_type = elem.element_type.lower()
+
+        if elem_type in {"line", "connector"} or not elem.polygon:
+            if bbox.width >= bbox.height:
+                return (bbox.x1, cy), (bbox.x2, cy)
+            return (cx, bbox.y1), (cx, bbox.y2)
+
+        points = [(float(p[0]), float(p[1])) for p in elem.polygon if len(p) >= 2]
+        if len(points) < 2:
+            if bbox.width >= bbox.height:
+                return (bbox.x1, cy), (bbox.x2, cy)
+            return (cx, bbox.y1), (cx, bbox.y2)
+
+        tip = self._find_sharpest_polygon_point(points)
+        start = max(points, key=lambda p: (p[0] - tip[0]) ** 2 + (p[1] - tip[1]) ** 2)
+        return start, tip
+
+    def _find_sharpest_polygon_point(self, points):
+        """Find the most likely arrow head tip as the sharpest polygon vertex."""
+        if len(points) < 3:
+            return points[-1]
+        import math
+        best_point = points[0]
+        best_angle = 360.0
+        n = len(points)
+        for i, point in enumerate(points):
+            prev_p = points[(i - 1) % n]
+            next_p = points[(i + 1) % n]
+            v1 = (prev_p[0] - point[0], prev_p[1] - point[1])
+            v2 = (next_p[0] - point[0], next_p[1] - point[1])
+            len1 = math.hypot(*v1)
+            len2 = math.hypot(*v2)
+            if len1 <= 0 or len2 <= 0:
+                continue
+            cos_a = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (len1 * len2)))
+            angle = math.degrees(math.acos(cos_a))
+            if angle < best_angle:
+                best_angle = angle
+                best_point = point
+        return best_point
 
 
 # ======================== CLI ========================
