@@ -10,9 +10,17 @@ from typing import List, Dict, Any
 class FontSizeProcessor:
     """Compute font size from block height; optional clustering to unify nearby blocks."""
 
-    def __init__(self, formula_ratio: float = 0.6, text_offset: float = 1.0):
+    def __init__(
+        self,
+        formula_ratio: float = 0.6,
+        text_offset: float = 1.0,
+        text_height_ratio: float = 0.72,
+        max_body_font_size: float = 22.0,
+    ):
         self.formula_ratio = formula_ratio
         self.text_offset = text_offset
+        self.text_height_ratio = text_height_ratio
+        self.max_body_font_size = max_body_font_size
     
     def process(
         self, 
@@ -59,7 +67,11 @@ class FontSizeProcessor:
             if is_latex:
                 font_size = height * self.formula_ratio
             else:
-                font_size = height - self.text_offset
+                # OCR boxes describe glyph pixel height, not draw.io point size. 1:1
+                # mapping makes Chinese labels visibly too large, so use a conservative
+                # glyph-height ratio and cap common diagram labels.
+                font_size = min(height * self.text_height_ratio, height - self.text_offset)
+                font_size = min(font_size, self.max_body_font_size)
             
             block["font_size"] = max(font_size, 6)
             result.append(block)
@@ -141,13 +153,16 @@ class FontSizeProcessor:
             size = block.get("font_size", median_size)
             # Preserve real titles/annotations; normalize ordinary labels only.
             if median_size * 0.55 <= size <= median_size * 1.65:
-                normalized = round(median_size, 1)
+                normalized = round(min(median_size, self.max_body_font_size), 1)
                 if abs(size - normalized) > 0.1:
                     adjusted_count += 1
                 block["font_size"] = normalized
 
         if adjusted_count:
-            print(f"     Font size: globally normalized {adjusted_count} body labels to {median_size:.1f}pt")
+            print(
+                f"     Font size: globally normalized {adjusted_count} body labels "
+                f"to {min(median_size, self.max_body_font_size):.1f}pt"
+            )
         return result
 
     def _should_group(

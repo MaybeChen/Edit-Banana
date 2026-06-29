@@ -231,7 +231,7 @@ class IconPictureProcessor(BaseProcessor):
     """Process icon/picture elements: filter, crop, optional RMBG, base64, XML fragments."""
 
     # Types that use RMBG for background removal; others keep original crop
-    RMBG_TYPES = {"icon", "logo", "symbol", "emoji", "button", "arrow"}
+    RMBG_TYPES = {"icon", "logo", "symbol", "emoji", "button"}
     
 
     # Types that keep background (crop only)
@@ -317,8 +317,9 @@ class IconPictureProcessor(BaseProcessor):
         )
     
     def _get_elements_to_process(self, elements: List[ElementInfo]) -> List[ElementInfo]:
-        """Filter elements to process (icons, arrows, etc.; arrows treated as icon crop)."""
-        all_types = set(IMAGE_PROMPT) | {"arrow", "line", "connector"}
+        """Filter raster image/icon elements only; arrows and lines are generated as vectors later."""
+        vector_line_types = {"arrow", "line", "connector"}
+        all_types = set(IMAGE_PROMPT) - vector_line_types
         return [
             e for e in elements
             if e.element_type.lower() in all_types and e.base64 is None
@@ -354,8 +355,9 @@ class IconPictureProcessor(BaseProcessor):
 
         is_rmbg = False
         
-        # RMBG or keep background by type
-        if elem_type in self.RMBG_TYPES:
+        # RMBG is only safe for small, standalone icons. Large card/container crops and
+        # vector connectors must keep their original pixels so borders/inner strokes do not break.
+        if self._should_use_rmbg(elem_type, elem, (img_w, img_h), text_bboxes or []):
             processed = self._rmbg_model.remove_background(cropped)
             elem.has_transparency = True
             is_rmbg = True
@@ -381,6 +383,58 @@ class IconPictureProcessor(BaseProcessor):
         
         return is_rmbg
     
+
+    def _should_use_rmbg(
+        self,
+        elem_type: str,
+        elem: ElementInfo,
+        image_size: tuple,
+        text_bboxes: List[List[int]],
+    ) -> bool:
+        """Return whether RMBG should run for this element.
+
+        RMBG is destructive for line-art containers: it may erase rounded borders,
+        connector strokes, and text-adjacent pixels. Only small standalone icons use it.
+        """
+        if elem_type in {"arrow", "line", "connector"}:
+            return False
+        if elem_type not in self.RMBG_TYPES:
+            return False
+
+        img_w, img_h = image_size
+        canvas_area = max(1, img_w * img_h)
+        bbox = elem.bbox
+        area_ratio = bbox.area / canvas_area
+        large_card_like = area_ratio >= 0.015 or (bbox.width >= 160 and bbox.height >= 110)
+        if large_card_like:
+            elem.processing_notes.append(
+                f"RMBG skipped: large/card-like crop (area_ratio={area_ratio:.3f})"
+            )
+            return False
+
+        if self._overlaps_text_bbox(bbox.to_list(), text_bboxes):
+            elem.processing_notes.append("RMBG skipped: crop overlaps editable OCR text")
+            return False
+
+        return True
+
+    def _overlaps_text_bbox(self, bbox: List[int], text_bboxes: List[List[int]], min_overlap: float = 0.02) -> bool:
+        """Whether bbox overlaps any OCR text box by a meaningful fraction of text area."""
+        if not text_bboxes:
+            return False
+        bx1, by1, bx2, by2 = bbox
+        for tx1, ty1, tx2, ty2 in text_bboxes:
+            ix1 = max(bx1, tx1)
+            iy1 = max(by1, ty1)
+            ix2 = min(bx2, tx2)
+            iy2 = min(by2, ty2)
+            if ix2 <= ix1 or iy2 <= iy1:
+                continue
+            text_area = max(1, (tx2 - tx1) * (ty2 - ty1))
+            if ((ix2 - ix1) * (iy2 - iy1)) / text_area >= min_overlap:
+                return True
+        return False
+
     def _extract_text_bboxes(self, context: ProcessingContext) -> List[List[int]]:
         """Extract OCR text boxes so raster icon crops can yield to editable text."""
         text_xml = getattr(context, "intermediate_results", {}).get("text_xml") if context else None
