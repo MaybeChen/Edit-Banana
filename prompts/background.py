@@ -1,6 +1,10 @@
 # Background/container prompts for SAM3
-# Target large grouping/frame regions rather than every small card.
+# Broad container terms preserve recall; panel/frame phrases target large regions.
 BACKGROUND_PROMPT = [
+    "panel",
+    "container",
+    "filled region",
+    "background",
     "outer container panel",
     "section panel",
     "group container",

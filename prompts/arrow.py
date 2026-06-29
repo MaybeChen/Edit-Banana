@@ -1,11 +1,15 @@
 # Arrow/connector prompts for SAM3
-# Use specific connector phrases to reduce card-border and icon-stroke false positives.
+# Keep broad terms to preserve recall, then add specific connector variants.
 ARROW_PROMPT = [
+    "arrow",
+    "line",
+    "connector",
     "straight arrow",
     "arrow with arrowhead",
     "directed connector",
     "straight connector line",
     "thin connector line",
+    "dashed line",
     "dashed connector line",
     "dotted connector line",
     "line connecting diagram nodes",

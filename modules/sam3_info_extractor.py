@@ -149,6 +149,20 @@ class ConfigLoader:
             },
         }
     
+    @staticmethod
+    def _merge_prompts(*prompt_lists: List[str]) -> List[str]:
+        """Merge prompt lists while preserving order and removing duplicates."""
+        merged = []
+        seen = set()
+        for prompts in prompt_lists:
+            for prompt in prompts or []:
+                prompt = str(prompt).strip()
+                if not prompt or prompt in seen:
+                    continue
+                seen.add(prompt)
+                merged.append(prompt)
+        return merged
+
     @classmethod
     def get_prompt_groups(cls) -> Dict[PromptGroup, PromptGroupConfig]:
         """从配置文件加载词组配置"""
@@ -175,9 +189,16 @@ class ConfigLoader:
         for key, enum_val in key_to_enum.items():
             if key in prompt_groups_config:
                 group_cfg = prompt_groups_config.get(key, {})
-                # Prompt text defaults live in prompts/*.py, but config.yaml can
-                # override them for per-project tuning without code changes.
-                prompts = group_cfg.get('prompts') or prompt_mapping.get(key, [])
+                # Prompt text defaults live in prompts/*.py. Config can add
+                # project-specific prompts without losing the broad defaults that
+                # preserve recall; set replace_default_prompts: true to replace.
+                default_prompts = list(prompt_mapping.get(key, []))
+                configured_prompts = list(group_cfg.get('prompts') or [])
+                extra_prompts = list(group_cfg.get('extra_prompts') or [])
+                if group_cfg.get('replace_default_prompts'):
+                    prompts = configured_prompts or default_prompts
+                else:
+                    prompts = cls._merge_prompts(default_prompts, configured_prompts, extra_prompts)
                 # 从config.yaml读取其他配置（阈值、面积、优先级等）
                 result[enum_val] = PromptGroupConfig(
                     name=group_cfg.get('name', key),

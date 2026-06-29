@@ -1,6 +1,14 @@
 # Basic shape prompts for SAM3
-# Prefer diagram-specific shape phrases over generic words like "rectangle".
+# Broad shape names preserve recall; diagram-specific phrases reduce ambiguity.
 SHAPE_PROMPT = [
+    "rectangle",
+    "rounded rectangle",
+    "ellipse",
+    "circle",
+    "cylinder",
+    "diamond",
+    "triangle",
+    "hexagon",
     "rounded rectangle card",
     "rectangular card",
     "outlined card",
@@ -9,7 +17,4 @@ SHAPE_PROMPT = [
     "circular node",
     "ellipse node",
     "database cylinder",
-    "diamond shape",
-    "triangle shape",
-    "hexagon shape",
 ]

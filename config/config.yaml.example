@@ -10,10 +10,11 @@ sam3:
   epsilon_factor: 0.02
   min_area: 100
 
-# Prompt groups: prompts default to prompts/*.py; optional prompts below override those defaults.
+# Prompt groups: prompts default to prompts/*.py; prompts below are merged with defaults unless replace_default_prompts is true.
 prompt_groups:
   image:
     name: image
+    replace_default_prompts: false
     prompts:
       - standalone icon
       - line art icon
@@ -28,6 +29,7 @@ prompt_groups:
     priority: 2
   arrow:
     name: arrow
+    replace_default_prompts: false
     prompts:
       - straight arrow
       - arrow with arrowhead
@@ -42,6 +44,7 @@ prompt_groups:
     priority: 4
   shape:
     name: shape
+    replace_default_prompts: false
     prompts:
       - rounded rectangle card
       - rectangular card
@@ -59,6 +62,7 @@ prompt_groups:
     priority: 3
   background:
     name: background
+    replace_default_prompts: false
     prompts:
       - outer container panel
       - section panel
