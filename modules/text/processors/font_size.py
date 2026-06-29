@@ -14,8 +14,8 @@ class FontSizeProcessor:
         self,
         formula_ratio: float = 0.6,
         text_offset: float = 1.0,
-        text_height_ratio: float = 0.72,
-        max_body_font_size: float = 22.0,
+        text_height_ratio: float = 0.58,
+        max_body_font_size: float = 18.0,
     ):
         self.formula_ratio = formula_ratio
         self.text_offset = text_offset
@@ -56,7 +56,12 @@ class FontSizeProcessor:
         return blocks
     
     def calculate_font_sizes(self, text_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Set font_size from block height (text: height - offset; formula: height * ratio)."""
+        """Set draw.io fontSize from OCR bbox height.
+
+        Draw.io uses point-like font sizes while OCR geometry is in source-image
+        pixels. Using the raw bbox height makes exported text larger than the
+        original glyphs; the default ratio keeps rendered text inside the OCR box.
+        """
         result = []
         for block in text_blocks:
             block = copy.copy(block)
@@ -67,9 +72,9 @@ class FontSizeProcessor:
             if is_latex:
                 font_size = height * self.formula_ratio
             else:
-                # OCR boxes describe glyph pixel height, not draw.io point size. 1:1
-                # mapping makes Chinese labels visibly too large, so use a conservative
-                # glyph-height ratio and cap common diagram labels.
+                # OCR boxes are source-image pixels; draw.io fontSize is point-like
+                # and line-height adds extra visual height. Keep text inside its OCR
+                # geometry to preserve relative size/layout in the original image.
                 font_size = min(height * self.text_height_ratio, height - self.text_offset)
                 font_size = min(font_size, self.max_body_font_size)
             
