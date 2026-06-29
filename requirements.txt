@@ -24,6 +24,7 @@ scikit-image>=0.24.0,<0.26.0
 requests
 fastapi
 uvicorn[standard]
+python-pptx>=1.0.2
 
 # Text OCR (local, default)
 pytesseract

@@ -296,6 +296,14 @@ class Pipeline:
             
             output_path = merge_result.metadata.get('output_path')
             print(f"   Output: {output_path}")
+
+            if output_path:
+                print("\n[8] PowerPoint export...")
+                from pptx_exporter import export_drawio_to_pptx
+                pptx_path = export_drawio_to_pptx(output_path)
+                context.intermediate_results['pptx_output'] = pptx_path
+                print(f"   PPTX: {pptx_path}")
+
             print(f"\n{'='*60}\nDone.\n{'='*60}")
             
             return output_path
