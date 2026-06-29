@@ -1593,8 +1593,9 @@ class BasicShapeProcessor(BaseProcessor):
                 "score": max(elem.score, 0.72),
                 "method": "sam3_card_bbox",
                 "is_rounded": True,
-                "fill_color": "#ffffff",
+                "fill_color": "none",
                 "stroke_color": "#000000",
+                "overlay_border": True,
             }
             new_elem = self._create_element_from_cv(
                 item, start_id + added_count, "container", cv2_image
@@ -1629,8 +1630,11 @@ class BasicShapeProcessor(BaseProcessor):
             source_prompt="cv_detection"
         )
         
-        # 设置层级
-        if elem_type == "container":
+        # 设置层级. Card overlay borders must sit above raster crops so the crisp
+        # vector stroke is visible; normal containers remain behind content.
+        if item.get("overlay_border"):
+            elem.layer_level = LayerLevel.ARROW.value
+        elif elem_type == "container":
             elem.layer_level = LayerLevel.BACKGROUND.value
         else:
             elem.layer_level = LayerLevel.BASIC_SHAPE.value

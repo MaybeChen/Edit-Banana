@@ -462,7 +462,7 @@ class IconPictureProcessor(BaseProcessor):
         return bboxes
 
     def _apply_text_cutouts(self, image: Image.Image, crop_box: tuple, text_bboxes: List[List[int]]) -> Image.Image:
-        """Make OCR text regions transparent inside raster crops to avoid duplicate/non-editable text."""
+        """Make OCR text regions transparent inside raster crops while preserving card borders."""
         if not text_bboxes:
             return image
 
@@ -470,26 +470,49 @@ class IconPictureProcessor(BaseProcessor):
         rgba = image.convert("RGBA")
         arr = np.array(rgba)
         cut_count = 0
+        skipped_border_count = 0
+
+        # Keep a protected border band so OCR boxes that are too wide/tall do not erase
+        # rounded card outlines. Use a small proportional margin for tiny icons.
+        crop_w = max(1, crop_x2 - crop_x1)
+        crop_h = max(1, crop_y2 - crop_y1)
+        border_safe_margin = max(4, min(10, int(min(crop_w, crop_h) * 0.04)))
+        inner_x1 = crop_x1 + border_safe_margin
+        inner_y1 = crop_y1 + border_safe_margin
+        inner_x2 = crop_x2 - border_safe_margin
+        inner_y2 = crop_y2 - border_safe_margin
 
         for tx1, ty1, tx2, ty2 in text_bboxes:
-            ix1 = max(crop_x1, tx1)
-            iy1 = max(crop_y1, ty1)
-            ix2 = min(crop_x2, tx2)
-            iy2 = min(crop_y2, ty2)
+            ix1 = max(inner_x1, tx1)
+            iy1 = max(inner_y1, ty1)
+            ix2 = min(inner_x2, tx2)
+            iy2 = min(inner_y2, ty2)
             if ix2 <= ix1 or iy2 <= iy1:
+                # It overlapped only the protected border band, so do not cut it.
+                if not (tx2 <= crop_x1 or tx1 >= crop_x2 or ty2 <= crop_y1 or ty1 >= crop_y2):
+                    skipped_border_count += 1
                 continue
 
-            # Pad a little because OCR boxes are often tight around glyph strokes.
-            local_x1 = max(0, ix1 - crop_x1 - 2)
-            local_y1 = max(0, iy1 - crop_y1 - 2)
-            local_x2 = min(arr.shape[1], ix2 - crop_x1 + 2)
-            local_y2 = min(arr.shape[0], iy2 - crop_y1 + 2)
+            # Pad OCR boxes inside the protected area only. Padding outside the inner area
+            # is clamped so it cannot punch holes in card borders.
+            local_x1 = max(border_safe_margin, ix1 - crop_x1 - 2)
+            local_y1 = max(border_safe_margin, iy1 - crop_y1 - 2)
+            local_x2 = min(arr.shape[1] - border_safe_margin, ix2 - crop_x1 + 2)
+            local_y2 = min(arr.shape[0] - border_safe_margin, iy2 - crop_y1 + 2)
+            if local_x2 <= local_x1 or local_y2 <= local_y1:
+                skipped_border_count += 1
+                continue
             arr[local_y1:local_y2, local_x1:local_x2, 3] = 0
             cut_count += 1
 
         if cut_count:
-            self._log(f"Applied OCR text cutouts to raster crop: {cut_count}")
+            msg = f"Applied OCR text cutouts to raster crop: {cut_count}"
+            if skipped_border_count:
+                msg += f" (kept {skipped_border_count} border-overlapping box(es))"
+            self._log(msg)
             return Image.fromarray(arr)
+        if skipped_border_count:
+            self._log(f"Skipped {skipped_border_count} OCR cutout(s) that touched protected raster border")
         return rgba
 
     def _generate_xml(self, elem: ElementInfo):
