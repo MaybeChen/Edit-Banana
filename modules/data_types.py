@@ -123,6 +123,7 @@ class ElementInfo:
     arrow_end: Optional[tuple] = None            # 箭头终点
     vector_points: Optional[List[List[int]]] = None  # 矢量箭头路径点 [[x,y], [x,y], ...]
     arrow_style: Optional[str] = None            # 箭头样式（classic, open等）
+    line_style: Optional[str] = None             # 线条样式（solid, dashed等）
     
     # === 元数据 ===
     source_prompt: Optional[str] = None          # 触发此元素识别的prompt
