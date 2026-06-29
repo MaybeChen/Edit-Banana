@@ -267,7 +267,7 @@ class MxGraphXMLGenerator:
         
         # 默认字体
         if font_family is None:
-            font_family = "Arial"
+            font_family = "Microsoft YaHei"
         
         return TextCellData(
             cell_id=self._get_next_id(),
