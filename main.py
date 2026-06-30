@@ -39,6 +39,9 @@ from modules import (
     XMLMerger,
     MetricEvaluator,
     RefinementProcessor,
+    VLMElementRefiner,
+    VLMLayoutRefiner,
+    VLMExportValidator,
     
     # Text (modules/text/)
     TextRestorer,
@@ -233,6 +236,13 @@ class Pipeline:
             self._vlm_layout_refiner = _VLMProcessorAdapter(self.vlm_enhancer, "refine_layout")
         return self._vlm_layout_refiner
     
+    @property
+    def vlm_export_validator(self) -> VLMExportValidator:
+        if self._vlm_export_validator is None:
+            vlm_config = self.config.get("multimodal") or {}
+            self._vlm_export_validator = VLMExportValidator(vlm_config)
+        return self._vlm_export_validator
+
     def process_image(self,
                       image_path: str,
                       output_dir: str = None,
@@ -321,7 +331,14 @@ class Pipeline:
             meta_path = os.path.join(img_output_dir, "sam3_metadata.json")
             self.sam3_extractor.save_metadata(context, meta_path)
 
-            print("\n[3] Shape/icon processing...")
+            print("\n[3] VLM element refinement...")
+            result = self.vlm_element_refiner.process(context)
+            if result.metadata.get("skipped_reason"):
+                print(f"   Skipped: {result.metadata.get('skipped_reason')}")
+            else:
+                print(f"   Refined: {result.metadata.get('updated_count', 0)}/{result.metadata.get('processed_count', 0)}")
+
+            print("\n[4] Shape/icon processing...")
             result = self.icon_processor.process(context)
             print(f"   Icons: {result.metadata.get('processed_count', 0)}")
             result = self.shape_processor.process(context)
@@ -330,13 +347,13 @@ class Pipeline:
             if vlm_layout_result.get("updated"):
                 print(f"   VLM layout refinements: {vlm_layout_result.get('updated')}")
 
-            print("\n[4] XML fragments...")
+            print("\n[6] XML fragments...")
             self._generate_xml_fragments(context)
             xml_count = len([e for e in context.elements if e.has_xml()])
             print(f"   Fragments: {xml_count}")
 
             if with_refinement:
-                print("\n[5] Metric evaluation...")
+                print("\n[7] Metric evaluation...")
                 eval_result = self.metric_evaluator.process(context)
                 
                 overall_score = eval_result.metadata.get('overall_score', 0)
@@ -351,7 +368,7 @@ class Pipeline:
                 should_refine = overall_score < REFINEMENT_THRESHOLD and bad_regions
 
                 if should_refine:
-                    print("\n[6] Refinement...")
+                    print("\n[8] Refinement...")
                     context.intermediate_results['bad_regions'] = bad_regions
                     vlm_region_result = self.vlm_enhancer.refine_regions(context)
                     vlm_region_count = vlm_region_result.get("added", 0)
@@ -370,11 +387,11 @@ class Pipeline:
                         self.refinement_processor.save_visualization(context, new_elements, refine_vis_path)
                         print(f"   Saved: {refine_vis_path}")
                 elif not bad_regions:
-                    print("\n[6] Refinement skipped (no bad regions)")
+                    print("\n[8] Refinement skipped (no bad regions)")
                 else:
-                    print("\n[6] Refinement skipped (score ok)")
+                    print("\n[8] Refinement skipped (score ok)")
 
-            print("\n[7] Merge XML...")
+            print("\n[9] Merge XML...")
             merge_result = self.xml_merger.process(context)
             
             if not merge_result.success:
