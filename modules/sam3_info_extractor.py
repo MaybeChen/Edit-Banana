@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from .base import BaseProcessor, ProcessingContext, ModelWrapper
 from .data_types import ElementInfo, BoundingBox, ProcessingResult
-from .vlm_prompt_planner import VLMPromptPlanner
+from .vlm.prompt_planner import VLMPromptPlanner
 
 
 # ======================== 提示词分组枚举 ========================
@@ -111,6 +111,8 @@ class ConfigLoader:
             'sam3': {
                 'checkpoint_path': '',
                 'bpe_path': '',
+                'use_vlm_prompts': False,
+                'vlm_prompt_max_per_group': 8,
             },
             'prompt_groups': {
                 'image': {
