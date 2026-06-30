@@ -129,7 +129,7 @@ class RefinementProcessor(BaseProcessor):
         'expand_margin': 5,               # 裁剪时向外扩展的边距（像素）- 增加边距避免切边
         'skip_if_mostly_white': True,     # 是否跳过大部分为白色的区域
         'white_threshold': 0.95,          # 白色像素占比阈值 - 放宽到95%，只跳过真正纯白区域
-        'use_vlm': False,                 # refinement.use_vlm: 是否先用VLM解析bad region中的结构化元素
+        'use_vlm': True,                  # refinement.use_vlm: 是否对每个bad region调用VLM解析结构化子元素
         'vlm_confidence_threshold': 0.7,   # VLM区域解析最低可信置信度
     }
 
@@ -196,7 +196,8 @@ class RefinementProcessor(BaseProcessor):
         # 处理问题区域
         new_elements = []
         skipped_count = 0
-        start_id = len(context.elements)
+        # ElementInfo.id 不一定与列表长度一致，使用当前最大id之后的值，避免与既有元素冲突。
+        start_id = max([elem.id for elem in context.elements], default=-1) + 1
         
         # 获取配置参数
         min_area = self.refine_config.get('min_region_area', 100)
@@ -224,7 +225,8 @@ class RefinementProcessor(BaseProcessor):
                     skipped_count += 1
                     continue
                 
-                # 处理该区域：配置开启时先尝试VLM结构化解析，失败再保留picture fallback。
+                # 处理该区域：默认对MetricEvaluator给出的每个bad region调用VLM，
+                # 将返回的区域内子元素转成ElementInfo；任何不可用/不可信/异常都回退为当前picture裁剪。
                 elems = self._process_region_with_optional_vlm(
                     region,
                     original_image,
@@ -330,7 +332,10 @@ class RefinementProcessor(BaseProcessor):
             client = OpenAICompatibleVLMClient(self.vlm_config)
             if not client.available:
                 return None
-        return VLMRegionAnalyzer(client, self.refine_config)
+            context.shared_models['vlm_client'] = client
+        analyzer = VLMRegionAnalyzer(client, self.refine_config)
+        context.shared_models['vlm_region_analyzer'] = analyzer
+        return analyzer
 
     def _crop_region(self,
                      region: Dict[str, Any],

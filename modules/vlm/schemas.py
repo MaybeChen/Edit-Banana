@@ -35,7 +35,20 @@ REGION_ANALYSIS_SCHEMA: Dict[str, Any] = {
     "required": ["confidence", "elements"],
     "properties": {
         "confidence": {"type": "number"},
-        "elements": {"type": "array", "items": {"type": "object"}},
+        "elements": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["element_type", "bbox", "confidence"],
+                "properties": {
+                    "element_type": {"type": "string"},
+                    "bbox": {"type": "array", "items": {"type": "number"}},
+                    "confidence": {"type": "number"},
+                    "line_style": {"type": ["string", "null"]},
+                    "reason": {"type": "string"},
+                },
+            },
+        },
     },
 }
 
@@ -67,6 +80,14 @@ def _validate_value(key: str, value: Any, schema: Mapping[str, Any]) -> None:
         allowed = [allowed]
     if allowed and not any(_matches_type(value, item) for item in allowed):
         raise ValueError(f"VLM response key '{key}' has invalid type")
+    if isinstance(value, dict):
+        for required_key in schema.get("required", []) or []:
+            if required_key not in value:
+                raise ValueError(f"VLM response key '{key}' missing required key: {required_key}")
+        for child_key, child_value in value.items():
+            child_schema = (schema.get("properties", {}) or {}).get(child_key)
+            if child_schema:
+                _validate_value(f"{key}.{child_key}", child_value, child_schema)
     if isinstance(value, list) and "items" in schema:
         for item in value:
             _validate_value(f"{key}[]", item, schema["items"])
