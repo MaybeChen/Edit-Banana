@@ -1,9 +1,9 @@
 """VLM-based layout relationship refinement.
 
 This processor asks a configured VLM to infer diagram edge relationships from the
-full image plus the current element inventory. It does not create new elements;
-it only annotates existing arrow/connector/line elements with source/target and
-style hints used later by XML generation.
+full image plus the current element bbox inventory. It does not create new
+elements; it only annotates existing arrow/connector/line elements with
+source/target and style hints used later by XML generation.
 """
 
 import base64
@@ -136,9 +136,9 @@ class VLMLayoutRefiner(BaseProcessor):
     def _build_prompt(self, elements: List[Dict[str, Any]]) -> str:
         return (
             "You are refining a diagram graph before draw.io XML generation. Return STRICT JSON only. "
-            "Use the full image and the element inventory to infer which shapes each existing arrow/connector/line connects. "
-            "Do not invent element IDs. Schema: {\"relationships\":[{\"edge_id\":int,\"source_id\":int|null,\"target_id\":int|null,\"line_style\":\"solid|dashed|dotted|null\",\"arrow_style\":\"none|classic|open|block|null\",\"confidence\":number,\"reason\":string}]}. "
-            "For arrows, source_id is the tail element and target_id is the arrowhead element. For plain lines use visual left/top as source if direction is unclear and arrow_style none. "
+            "Use the full image and the element bbox inventory to infer which shapes each existing arrow/connector/line connects. "
+            "Do not invent element IDs. Schema: {\"relationships\":[{\"edge_id\":int,\"source_id\":int|null,\"target_id\":int|null,\"line_style\":\"solid|dashed|dotted|null\",\"end_arrow\":\"none|classic|open|block|null\",\"confidence\":number,\"reason\":string}]}. "
+            "For arrows, source_id is the tail element and target_id is the arrowhead element. For plain lines use visual left/top as source if direction is unclear and end_arrow none. "
             f"Element inventory JSON: {json.dumps(elements, ensure_ascii=False)}"
         )
 
@@ -164,24 +164,24 @@ class VLMLayoutRefiner(BaseProcessor):
             edge = by_id.get(edge_id) if edge_id is not None else None
             if edge is None or edge.element_type.lower() not in EDGE_TYPES:
                 continue
-            source_id = self._to_int(rel.get("source_id"))
-            target_id = self._to_int(rel.get("target_id"))
-            if source_id == edge_id or source_id not in by_id:
+            source_id = self._to_int(rel.get("source_id") or rel.get("source"))
+            target_id = self._to_int(rel.get("target_id") or rel.get("target"))
+            if source_id == edge_id or source_id not in by_id or by_id[source_id].element_type.lower() in EDGE_TYPES:
                 source_id = None
-            if target_id == edge_id or target_id not in by_id:
+            if target_id == edge_id or target_id not in by_id or by_id[target_id].element_type.lower() in EDGE_TYPES:
                 target_id = None
             line_style = self._clean_choice(rel.get("line_style"), LINE_STYLES)
-            arrow_style = self._clean_choice(rel.get("arrow_style"), ARROW_STYLES)
-            if source_id is None and target_id is None and line_style is None and arrow_style is None:
+            end_arrow = self._clean_choice(rel.get("end_arrow", rel.get("arrow_style")), ARROW_STYLES)
+            if source_id is None and target_id is None and line_style is None and end_arrow is None:
                 continue
             edge.source_id = source_id
             edge.target_id = target_id
             if line_style:
                 edge.line_style = line_style
-            if arrow_style:
-                edge.arrow_style = arrow_style
-            edge.processing_notes.append(f"VLM layout relation: source={source_id}, target={target_id}, line_style={line_style}, arrow_style={arrow_style}")
-            item = {"edge_id": edge.id, "source_id": source_id, "target_id": target_id, "line_style": line_style, "arrow_style": arrow_style}
+            if end_arrow:
+                edge.arrow_style = end_arrow
+            edge.processing_notes.append(f"VLM layout relation: source={source_id}, target={target_id}, line_style={line_style}, end_arrow={end_arrow}")
+            item = {"edge_id": edge.id, "source_id": source_id, "target_id": target_id, "line_style": line_style, "end_arrow": end_arrow}
             applied.append(item)
         return applied
 
