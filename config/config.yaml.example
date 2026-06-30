@@ -9,6 +9,10 @@ sam3:
   score_threshold: 0.5
   epsilon_factor: 0.02
   min_area: 100
+  # When enabled, ask the configured VLM to generate image-specific SAM3 prompts
+  # and merge them with the default prompt groups before extraction.
+  use_vlm_prompts: false
+  vlm_prompt_max_per_group: 8
 
 # Prompt groups: prompts default to prompts/*.py; prompts below are merged with defaults unless replace_default_prompts is true.
 prompt_groups:
@@ -134,6 +138,13 @@ multimodal:
 # RMBG background removal (optional). Put model at models/rmbg/model.onnx; use scripts/setup_rmbg.py to download from ModelScope
 # rmbg:
 #   model_path: "models/rmbg/model.onnx"
+
+# Export options
+export:
+  # Optional VLM validation/repair pass before PPTX export. When enabled, the
+  # pipeline compares the original image, an optional draw.io preview, and the
+  # merged XML summary, applies safe fixes, and writes vlm_export_warnings.json.
+  vlm_validate_before_pptx: false
 
 # Paths (optional)
 paths: {}
