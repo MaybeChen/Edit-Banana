@@ -565,7 +565,7 @@ class Pipeline:
         return False
 
     def _generate_edge_xml(self, elem, context: ProcessingContext = None) -> str:
-        """Generate an editable draw.io edge for arrows/lines/connectors."""
+        """Generate an editable coordinate-based draw.io edge for arrows/lines/connectors."""
         elem_type = elem.element_type.lower()
         start, end = self._infer_edge_points(elem, context.elements if context else None)
         arrow_heads = elem.arrow_heads or ("end" if elem_type == "arrow" else "none")
@@ -582,9 +582,7 @@ class Pipeline:
         ).format(end_arrow, start_arrow, stroke, stroke_width, dash_style)
         elem.arrow_start = start
         elem.arrow_end = end
-        source_attr = f' source="{elem.source_id}"' if elem.source_id is not None else ""
-        target_attr = f' target="{elem.target_id}"' if elem.target_id is not None else ""
-        return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}"{source_attr}{target_attr}>
+        return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}">
   <mxGeometry relative="1" as="geometry">
     <mxPoint x="{round(start[0], 2)}" y="{round(start[1], 2)}" as="sourcePoint"/>
     <mxPoint x="{round(end[0], 2)}" y="{round(end[1], 2)}" as="targetPoint"/>
@@ -641,20 +639,12 @@ class Pipeline:
             return False
 
     def _infer_edge_points(self, elem, elements=None) -> tuple:
-        """Infer connector endpoints, preferring VLM source/target direction when available.
+        """Infer connector endpoints from the arrow/line geometry.
 
-        SAM3 masks can flip arrow start/end when the arrowhead polygon is noisy.
-        When VLM supplies source_id/target_id, use those element boxes as the
-        directional truth: sourcePoint is placed on the source element boundary,
-        targetPoint is placed on the target element boundary. Geometry fallback is
-        still used when VLM relationship data is absent or incomplete.
+        Arrows are intentionally exported as coordinate-based edges instead of
+        binding to source/target elements. This avoids incorrect attachments when
+        relationship inference is noisy and preserves the source image geometry.
         """
-        if elements and elem.source_id is not None and elem.target_id is not None:
-            source = self._find_element_by_id(elements, elem.source_id)
-            target = self._find_element_by_id(elements, elem.target_id)
-            if source is not None and target is not None:
-                return self._bbox_connection_points(source.bbox, target.bbox)
-
         bbox = elem.bbox
         cx = (bbox.x1 + bbox.x2) / 2
         cy = (bbox.y1 + bbox.y2) / 2
