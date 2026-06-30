@@ -17,7 +17,8 @@ from PIL import Image
 
 from .base import BaseProcessor, ProcessingContext
 from .data_types import ElementInfo, ProcessingResult
-from .vlm_element_refiner import OpenAICompatibleVLMClient
+from .vlm.client import OpenAICompatibleVLMClient
+from .vlm.schemas import LAYOUT_RELATIONS_SCHEMA
 
 EDGE_TYPES = {"arrow", "connector", "line"}
 LINE_STYLES = {"solid", "dashed", "dotted"}
@@ -62,7 +63,7 @@ class VLMLayoutRefiner(BaseProcessor):
             old_max_tokens = getattr(client, "max_tokens", None)
             if old_max_tokens is not None:
                 client.max_tokens = max(int(old_max_tokens), self.max_tokens)
-            response = client.classify(data_url, prompt)
+            response = client.classify(data_url, prompt, LAYOUT_RELATIONS_SCHEMA)
             if old_max_tokens is not None:
                 client.max_tokens = old_max_tokens
             artifact["vlm_response"] = response

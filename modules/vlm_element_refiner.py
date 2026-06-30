@@ -8,12 +8,10 @@ ElementInfo fields.
 
 import base64
 import io
-import json
 import os
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
-import requests
 from PIL import Image
 
 from .base import BaseProcessor, ProcessingContext
@@ -72,61 +70,8 @@ LINE_STYLE_ALIASES = {
 }
 
 
-class OpenAICompatibleVLMClient:
-    """Small OpenAI-compatible chat-completions client for image classification."""
-
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config or {}
-        mode = self.config.get("mode", "api")
-        self.base_url = (self.config.get("local_base_url") if mode == "local" else self.config.get("base_url")) or ""
-        self.api_key = (self.config.get("local_api_key") if mode == "local" else self.config.get("api_key")) or ""
-        self.model = (self.config.get("local_model") if mode == "local" else self.config.get("model")) or ""
-        self.timeout = float(self.config.get("timeout", 60))
-        self.max_tokens = int(self.config.get("max_tokens", 512))
-        self.proxy = self.config.get("proxy") or None
-        self.ca_cert_path = self.config.get("ca_cert_path", True)
-
-    @property
-    def available(self) -> bool:
-        return bool(
-            self.base_url
-            and self.model
-            and self.api_key
-            and "YOUR_" not in self.api_key
-            and "YOUR_" not in self.model
-            and "YOUR_" not in self.base_url
-        )
-
-    def classify(self, image_data_url: str, prompt: str) -> Dict[str, Any]:
-        if not self.available:
-            raise RuntimeError("VLM client is not configured")
-
-        endpoint = self.base_url.rstrip("/")
-        if not endpoint.endswith("/chat/completions"):
-            endpoint = f"{endpoint}/chat/completions"
-
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": image_data_url}},
-                    ],
-                }
-            ],
-            "temperature": 0,
-            "max_tokens": self.max_tokens,
-            "response_format": {"type": "json_object"},
-        }
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
-        verify = self.ca_cert_path if self.ca_cert_path not in (False, "false", "False") else False
-        response = requests.post(endpoint, headers=headers, json=payload, timeout=self.timeout, proxies=proxies, verify=verify)
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        return _parse_json_object(content)
+from .vlm.client import OpenAICompatibleVLMClient
+from .vlm.schemas import ELEMENT_CLASSIFICATION_SCHEMA
 
 
 class VLMElementRefiner(BaseProcessor):
@@ -165,7 +110,7 @@ class VLMElementRefiner(BaseProcessor):
             for elem in targets:
                 try:
                     crop_data_url = self._crop_as_data_url(image, elem)
-                    vlm_output = client.classify(crop_data_url, self._build_prompt(elem))
+                    vlm_output = client.classify(crop_data_url, self._build_prompt(elem), ELEMENT_CLASSIFICATION_SCHEMA)
                     if self._apply_vlm_output(elem, vlm_output):
                         updated += 1
                     processed += 1
@@ -251,16 +196,3 @@ def _normalize_line_style(value: Any) -> Optional[str]:
     if value is None:
         return None
     return LINE_STYLE_ALIASES.get(str(value).strip().lower())
-
-
-def _parse_json_object(content: Any) -> Dict[str, Any]:
-    if isinstance(content, dict):
-        return content
-    text = str(content).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.S)
-        if not match:
-            raise
-        return json.loads(match.group(0))

@@ -17,7 +17,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw
 
-from .vlm_element_refiner import OpenAICompatibleVLMClient
+from .vlm.client import OpenAICompatibleVLMClient
+from .vlm.schemas import EXPORT_VALIDATION_SCHEMA
 
 
 AUTO_FIX_TYPES = {
@@ -74,7 +75,7 @@ class VLMExportValidator:
             old_max_tokens = getattr(client, "max_tokens", None)
             if old_max_tokens is not None:
                 client.max_tokens = max(int(old_max_tokens), self.max_tokens)
-            response = client.classify(image_url, self._build_prompt(summary))
+            response = client.classify(image_url, self._build_prompt(summary), EXPORT_VALIDATION_SCHEMA)
             if old_max_tokens is not None:
                 client.max_tokens = old_max_tokens
             artifact["vlm_response"] = response

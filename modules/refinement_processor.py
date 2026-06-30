@@ -100,7 +100,8 @@ from PIL import Image
 
 from .base import BaseProcessor, ProcessingContext
 from .data_types import ElementInfo, BoundingBox, ProcessingResult, LayerLevel, get_layer_level
-from .vlm_element_refiner import OpenAICompatibleVLMClient
+from .vlm.client import OpenAICompatibleVLMClient
+from .vlm.schemas import REGION_ANALYSIS_SCHEMA
 
 
 class RefinementProcessor(BaseProcessor):
@@ -533,7 +534,7 @@ class VLMRegionAnalyzer:
 
     def analyze(self, crop: Image.Image, region_bbox: BoundingBox, start_id: int) -> List[ElementInfo]:
         """返回可信的结构化ElementInfo列表；不可信或无结构化元素则返回空列表。"""
-        output = self.client.classify(self._image_to_data_url(crop), self._build_prompt(crop, region_bbox))
+        output = self.client.classify(self._image_to_data_url(crop), self._build_prompt(crop, region_bbox), REGION_ANALYSIS_SCHEMA)
         elements_data = self._extract_elements(output)
         elements: List[ElementInfo] = []
         for idx, item in enumerate(elements_data):
