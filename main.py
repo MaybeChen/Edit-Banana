@@ -56,6 +56,7 @@ from modules import (
 
 # Prompt groups enum
 from modules.sam3_info_extractor import PromptGroup
+from modules.vlm_enhancer import VLMEnhancer
 
 # Text module available (depends on ocr/coord_processor etc.)
 TEXT_MODULE_AVAILABLE = TextRestorer is not None
@@ -82,6 +83,19 @@ def load_config() -> dict:
                 'x_hw_appkey': '',
                 'max_tokens': 4000,
                 'timeout': 60,
+                'enabled': False,
+                'use_for': {
+                    'prompt_planning': True,
+                    'element_refine': True,
+                    'region_refine': True,
+                    'layout_refine': True,
+                    'export_validate': True,
+                },
+                'thresholds': {
+                    'element_refine_confidence': 0.75,
+                    'region_refine_confidence': 0.70,
+                    'layout_refine_confidence': 0.70,
+                },
             },
             'ocr': {
                 'engine': 'paddleocr',
@@ -124,9 +138,7 @@ class Pipeline:
         self._xml_merger = None
         self._metric_evaluator = None
         self._refinement_processor = None
-        self._vlm_element_refiner = None
-        self._vlm_layout_refiner = None
-        self._vlm_export_validator = None
+        self._vlm_enhancer = None
     
     @property
     def text_restorer(self):
@@ -180,18 +192,10 @@ class Pipeline:
         return self._refinement_processor
 
     @property
-    def vlm_element_refiner(self) -> VLMElementRefiner:
-        if self._vlm_element_refiner is None:
-            vlm_config = self.config.get("multimodal") or {}
-            self._vlm_element_refiner = VLMElementRefiner(vlm_config)
-        return self._vlm_element_refiner
-
-    @property
-    def vlm_layout_refiner(self) -> VLMLayoutRefiner:
-        if self._vlm_layout_refiner is None:
-            vlm_config = self.config.get("multimodal") or {}
-            self._vlm_layout_refiner = VLMLayoutRefiner(vlm_config)
-        return self._vlm_layout_refiner
+    def vlm_enhancer(self) -> VLMEnhancer:
+        if self._vlm_enhancer is None:
+            self._vlm_enhancer = VLMEnhancer(self.config)
+        return self._vlm_enhancer
     
     @property
     def vlm_export_validator(self) -> VLMExportValidator:
@@ -255,6 +259,9 @@ class Pipeline:
                 print("\n[1] Text extraction (skipped)")
 
             print("\n[2] Segmentation (SAM3)...")
+            prompt_plan = self.vlm_enhancer.apply_prompt_plan(self.sam3_extractor, image_path, img_output_dir)
+            if prompt_plan:
+                print(f"   VLM prompts: {sum(len(v) for v in prompt_plan.values())} added")
 
             if groups:
                 # Extract by group
@@ -277,6 +284,9 @@ class Pipeline:
                 context.canvas_height = result.canvas_height
             
             print(f"   Elements: {len(context.elements)}")
+            vlm_element_result = self.vlm_enhancer.refine_elements(context)
+            if vlm_element_result.get("updated"):
+                print(f"   VLM element refinements: {vlm_element_result.get('updated')}")
             vis_path = os.path.join(img_output_dir, "sam3_extraction.png")
             self.sam3_extractor.save_visualization(context, vis_path)
             meta_path = os.path.join(img_output_dir, "sam3_metadata.json")
@@ -294,6 +304,9 @@ class Pipeline:
             print(f"   Icons: {result.metadata.get('processed_count', 0)}")
             result = self.shape_processor.process(context)
             print(f"   Shapes: {result.metadata.get('processed_count', 0)}")
+            vlm_layout_result = self.vlm_enhancer.refine_layout(context)
+            if vlm_layout_result.get("updated"):
+                print(f"   VLM layout refinements: {vlm_layout_result.get('updated')}")
 
             print("\n[5] VLM layout refinement...")
             result = self.vlm_layout_refiner.process(context)
@@ -327,11 +340,18 @@ class Pipeline:
                 if should_refine:
                     print("\n[8] Refinement...")
                     context.intermediate_results['bad_regions'] = bad_regions
-                    refine_result = self.refinement_processor.process(context)
-                    new_count = refine_result.metadata.get('new_elements_count', 0)
-                    print(f"   Added {new_count} elements")
+                    vlm_region_result = self.vlm_enhancer.refine_regions(context)
+                    vlm_region_count = vlm_region_result.get("added", 0)
+                    if vlm_region_count:
+                        print(f"   VLM added {vlm_region_count} structured elements")
+                        new_count = vlm_region_count
+                    else:
+                        refine_result = self.refinement_processor.process(context)
+                        new_count = refine_result.metadata.get('new_elements_count', 0)
+                        print(f"   Added {new_count} elements")
                     
                     if new_count > 0:
+                        self._generate_xml_fragments(context)
                         refine_vis_path = os.path.join(img_output_dir, "refinement_result.png")
                         new_elements = context.elements[-new_count:] if new_count > 0 else []
                         self.refinement_processor.save_visualization(context, new_elements, refine_vis_path)
@@ -349,6 +369,10 @@ class Pipeline:
             
             output_path = merge_result.metadata.get('output_path')
             print(f"   Output: {output_path}")
+            if output_path:
+                vlm_export_result = self.vlm_enhancer.validate_export(context, output_path)
+                if vlm_export_result.get("checked"):
+                    print("   VLM export validation: saved")
 
             if output_path:
                 print("\n[8] PowerPoint export...")
@@ -462,7 +486,9 @@ class Pipeline:
         ).format(end_arrow, dash_style)
         elem.arrow_start = start
         elem.arrow_end = end
-        return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}">
+        source_attr = f' source="{elem.source_id}"' if elem.source_id is not None else ""
+        target_attr = f' target="{elem.target_id}"' if elem.target_id is not None else ""
+        return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}"{source_attr}{target_attr}>
   <mxGeometry relative="1" as="geometry">
     <mxPoint x="{round(start[0], 2)}" y="{round(start[1], 2)}" as="sourcePoint"/>
     <mxPoint x="{round(end[0], 2)}" y="{round(end[1], 2)}" as="targetPoint"/>
