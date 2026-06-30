@@ -62,6 +62,24 @@ from modules.vlm_enhancer import VLMEnhancer
 TEXT_MODULE_AVAILABLE = TextRestorer is not None
 
 
+class _VLMProcessorAdapter:
+    """Compatibility adapter for older pipeline properties like vlm_element_refiner."""
+
+    def __init__(self, enhancer: VLMEnhancer, method_name: str):
+        self.enhancer = enhancer
+        self.method_name = method_name
+
+    def process(self, context: ProcessingContext) -> ProcessingResult:
+        result = getattr(self.enhancer, self.method_name)(context)
+        return ProcessingResult(
+            success=True,
+            elements=context.elements,
+            canvas_width=context.canvas_width,
+            canvas_height=context.canvas_height,
+            metadata=result if isinstance(result, dict) else {"result": result},
+        )
+
+
 # ======================== config ========================
 def load_config() -> dict:
     """Load config/config.yaml."""
@@ -139,6 +157,9 @@ class Pipeline:
         self._metric_evaluator = None
         self._refinement_processor = None
         self._vlm_enhancer = None
+        self._vlm_element_refiner = None
+        self._vlm_region_refiner = None
+        self._vlm_layout_refiner = None
     
     @property
     def text_restorer(self):
@@ -196,6 +217,24 @@ class Pipeline:
         if self._vlm_enhancer is None:
             self._vlm_enhancer = VLMEnhancer(self.config)
         return self._vlm_enhancer
+
+    @property
+    def vlm_element_refiner(self):
+        if self._vlm_element_refiner is None:
+            self._vlm_element_refiner = _VLMProcessorAdapter(self.vlm_enhancer, "refine_elements")
+        return self._vlm_element_refiner
+
+    @property
+    def vlm_region_refiner(self):
+        if self._vlm_region_refiner is None:
+            self._vlm_region_refiner = _VLMProcessorAdapter(self.vlm_enhancer, "refine_regions")
+        return self._vlm_region_refiner
+
+    @property
+    def vlm_layout_refiner(self):
+        if self._vlm_layout_refiner is None:
+            self._vlm_layout_refiner = _VLMProcessorAdapter(self.vlm_enhancer, "refine_layout")
+        return self._vlm_layout_refiner
     
     @property
     def vlm_export_validator(self) -> VLMExportValidator:
@@ -307,15 +346,6 @@ class Pipeline:
             vlm_layout_result = self.vlm_enhancer.refine_layout(context)
             if vlm_layout_result.get("updated"):
                 print(f"   VLM layout refinements: {vlm_layout_result.get('updated')}")
-
-            print("\n[5] VLM layout refinement...")
-            result = self.vlm_layout_refiner.process(context)
-            if result.metadata.get("skipped_reason"):
-                print(f"   Skipped: {result.metadata.get('skipped_reason')}")
-            else:
-                print(f"   Edge relations: {result.metadata.get('updated_count', 0)}/{result.metadata.get('processed_count', 0)}")
-            if result.metadata.get("vlm_layout_json"):
-                print(f"   Saved: {result.metadata.get('vlm_layout_json')}")
 
             print("\n[6] XML fragments...")
             self._generate_xml_fragments(context)
