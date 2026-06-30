@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Edit Banana — CLI entry: image to editable DrawIO XML.
+Edit Banana — CLI entry: image to editable PowerPoint.
 
-Pipeline: input image -> preprocess -> text OCR -> SAM3 segmentation -> shape/icon processing -> XML merge -> output .drawio.
+Pipeline: input image -> PaddleOCR -> VLM text styles -> coarse SAM3 -> VLM segmentation/attribute enrichment -> PPTX quality loop -> output .pptx.
 Requires: config/config.yaml (sam3.checkpoint_path, sam3.bpe_path), SAM3 library and weights, Tesseract or PaddleOCR.
 See README and docs/SETUP_SAM3.md.
 
@@ -19,6 +19,7 @@ import sys
 import argparse
 import warnings
 import yaml
+import json
 from pathlib import Path
 from typing import Optional, List
 
@@ -53,9 +54,29 @@ from modules import (
 
 # Prompt groups enum
 from modules.sam3_info_extractor import PromptGroup
+from modules.vlm_enhancer import VLMEnhancer
+from modules.text.xml_generator import MxGraphXMLGenerator
 
 # Text module available (depends on ocr/coord_processor etc.)
 TEXT_MODULE_AVAILABLE = TextRestorer is not None
+
+
+class _VLMProcessorAdapter:
+    """Compatibility adapter for older pipeline properties like vlm_element_refiner."""
+
+    def __init__(self, enhancer: VLMEnhancer, method_name: str):
+        self.enhancer = enhancer
+        self.method_name = method_name
+
+    def process(self, context: ProcessingContext) -> ProcessingResult:
+        result = getattr(self.enhancer, self.method_name)(context)
+        return ProcessingResult(
+            success=True,
+            elements=context.elements,
+            canvas_width=context.canvas_width,
+            canvas_height=context.canvas_height,
+            metadata=result if isinstance(result, dict) else {"result": result},
+        )
 
 
 # ======================== config ========================
@@ -69,6 +90,57 @@ def load_config() -> dict:
             'paths': {
                 'input_dir': './input',
                 'output_dir': './output',
+            },
+            'multimodal': {
+                'mode': 'api',
+                'api_key': '',
+                'base_url': '',
+                'model': '',
+                'x_hw_id': '',
+                'x_hw_appkey': '',
+                'max_tokens': 4000,
+                'timeout': 60,
+                'enabled': False,
+                'use_for': {
+                    'prompt_planning': False,
+                    'text_style': True,
+                    'segmentation_refine': True,
+                    'element_refine': False,
+                    'region_refine': False,
+                    'layout_refine': False,
+                    'element_attributes': True,
+                    'export_validate': True,
+                },
+                'thresholds': {
+                    'element_refine_confidence': 0.75,
+                    'region_refine_confidence': 0.70,
+                    'layout_refine_confidence': 0.70,
+                    'text_style_confidence': 0.65,
+                    'segmentation_refine_confidence': 0.70,
+                    'element_attribute_confidence': 0.65,
+                },
+            },
+            'ocr': {
+                'engine': 'paddleocr',
+                'paddleocr': {
+                    'lang': 'ch',
+                    'use_angle_cls': False,
+                    'allow_download': True,
+                    'allow_fallback_to_tesseract': False,
+                    'allow_legacy_fallback': False,
+                    'ocr_version': 'PP-OCRv6',
+                    'text_detection_model_name': 'PP-OCRv6_medium_det',
+                    'text_recognition_model_name': 'PP-OCRv6_medium_rec',
+                    'textline_orientation_model_name': 'PP-LCNet_x1_0_textline_ori',
+                    'text_det_limit_side_len': 64,
+                    'text_det_limit_type': 'min',
+                    'text_det_thresh': 0.3,
+                    'text_det_box_thresh': 0.6,
+                    'text_det_unclip_ratio': 1.5,
+                    'text_rec_score_thresh': 0.0,
+                    'scale': 1.0,
+                    'min_confidence': 0.30,
+                },
             }
         }
     
@@ -89,13 +161,18 @@ class Pipeline:
         self._xml_merger = None
         self._metric_evaluator = None
         self._refinement_processor = None
+        self._vlm_enhancer = None
+        self._vlm_element_refiner = None
+        self._vlm_region_refiner = None
+        self._vlm_layout_refiner = None
+        self._coarse_sam_prompts_applied = False
     
     @property
     def text_restorer(self):
         """OCR/text step; None if deps missing."""
         if self._text_restorer is None and TextRestorer is not None:
             ocr_config = self.config.get("ocr") or {}
-            ocr_engine = ocr_config.get("engine", "tesseract")
+            ocr_engine = os.environ.get("OCR_ENGINE", ocr_config.get("engine", "paddleocr"))
             self._text_restorer = TextRestorer(
                 formula_engine="none",
                 ocr_engine=ocr_engine,
@@ -107,7 +184,26 @@ class Pipeline:
     def sam3_extractor(self) -> Sam3InfoExtractor:
         if self._sam3_extractor is None:
             self._sam3_extractor = Sam3InfoExtractor()
+            self._apply_coarse_sam_prompts_if_enabled()
         return self._sam3_extractor
+
+    def _apply_coarse_sam_prompts_if_enabled(self) -> None:
+        multimodal_cfg = self.config.get("multimodal") or {}
+        if self._coarse_sam_prompts_applied or multimodal_cfg.get("coarse_sam_prompts", True) is False:
+            return
+        if self._sam3_extractor is None:
+            return
+        coarse_prompts = {
+            PromptGroup.IMAGE: ["icon", "picture"],
+            PromptGroup.BASIC_SHAPE: ["shape", "rectangle", "rounded rectangle", "circle", "ellipse", "diamond", "triangle", "hexagon", "cylinder"],
+            PromptGroup.ARROW: ["arrow", "connector", "line"],
+            PromptGroup.BACKGROUND: ["background", "container", "panel"],
+        }
+        for group, prompts in coarse_prompts.items():
+            cfg = self._sam3_extractor.prompt_groups.get(group)
+            if cfg is not None:
+                cfg.prompts = prompts.copy()
+        self._coarse_sam_prompts_applied = True
     
     @property
     def icon_processor(self) -> IconPictureProcessor:
@@ -140,6 +236,30 @@ class Pipeline:
         if self._refinement_processor is None:
             self._refinement_processor = RefinementProcessor()
         return self._refinement_processor
+
+    @property
+    def vlm_enhancer(self) -> VLMEnhancer:
+        if self._vlm_enhancer is None:
+            self._vlm_enhancer = VLMEnhancer(self.config)
+        return self._vlm_enhancer
+
+    @property
+    def vlm_element_refiner(self):
+        if self._vlm_element_refiner is None:
+            self._vlm_element_refiner = _VLMProcessorAdapter(self.vlm_enhancer, "refine_elements")
+        return self._vlm_element_refiner
+
+    @property
+    def vlm_region_refiner(self):
+        if self._vlm_region_refiner is None:
+            self._vlm_region_refiner = _VLMProcessorAdapter(self.vlm_enhancer, "refine_regions")
+        return self._vlm_region_refiner
+
+    @property
+    def vlm_layout_refiner(self):
+        if self._vlm_layout_refiner is None:
+            self._vlm_layout_refiner = _VLMProcessorAdapter(self.vlm_enhancer, "refine_layout")
+        return self._vlm_layout_refiner
     
     def process_image(self,
                       image_path: str,
@@ -147,173 +267,262 @@ class Pipeline:
                       with_refinement: bool = False,
                       with_text: bool = True,
                       groups: List[PromptGroup] = None) -> Optional[str]:
-        """Run pipeline on one image. Returns output XML path or None."""
+        """Run the VLM-first pipeline on one image. Returns final PPTX path or None."""
         print(f"\n{'='*60}")
         print(f"Processing: {image_path}")
         print(f"{'='*60}")
-        
-        # Output directory
+
         if output_dir is None:
             output_dir = self.config.get('paths', {}).get('output_dir', './output')
-        
+
         img_stem = Path(image_path).stem
         img_output_dir = os.path.join(output_dir, img_stem)
         os.makedirs(img_output_dir, exist_ok=True)
-        
+
         print("\n[0] Preprocess...")
-        context = ProcessingContext(
-            image_path=image_path,
-            output_dir=img_output_dir
-        )
+        context = ProcessingContext(image_path=image_path, output_dir=img_output_dir)
         context.intermediate_results['original_image_path'] = image_path
         context.intermediate_results['was_upscaled'] = False
         context.intermediate_results['upscale_factor'] = 1.0
 
         try:
+            text_blocks = []
             if with_text and self.text_restorer is not None:
-                print("\n[1] Text extraction (OCR)...")
+                print("\n[1] PaddleOCR text extraction...")
                 try:
-                    text_xml_content = self.text_restorer.process(image_path)
-                    text_output_path = os.path.join(img_output_dir, "text_only.drawio")
-                    with open(text_output_path, 'w', encoding='utf-8') as f:
-                        f.write(text_xml_content)
-                    context.intermediate_results['text_xml'] = text_xml_content
-                    print(f"   Saved: {text_output_path}")
+                    text_blocks = self.text_restorer.process_image(image_path)
+                    for idx, block in enumerate(text_blocks):
+                        block.setdefault("id", idx)
+                    context.intermediate_results['ocr_text_blocks'] = text_blocks
+                    if hasattr(self.text_restorer, "save_ocr_artifacts"):
+                        ocr_artifact_path = self.text_restorer.save_ocr_artifacts(img_output_dir, image_path)
+                        context.intermediate_results['ocr_result_json'] = ocr_artifact_path
+                        print(f"   OCR result: {ocr_artifact_path}")
+                    else:
+                        self._save_json(os.path.join(img_output_dir, "ocr_result.json"), {"text_blocks": text_blocks})
+                    if hasattr(self.text_restorer, "save_ocr_overlay"):
+                        ocr_overlay_path = self.text_restorer.save_ocr_overlay(img_output_dir, image_path)
+                        context.intermediate_results['ocr_overlay'] = ocr_overlay_path
+                        print(f"   OCR overlay: {ocr_overlay_path}")
+                    print(f"   Text blocks: {len(text_blocks)}")
                 except Exception as e:
                     print(f"   Text step failed: {e}")
                     print("   Continuing without text...")
             elif with_text:
-                print("\n[1] Text extraction (skipped - deps)")
+                print("\n[1] PaddleOCR text extraction (skipped - deps)")
             else:
-                print("\n[1] Text extraction (skipped)")
+                print("\n[1] PaddleOCR text extraction (skipped)")
 
-            print("\n[2] Segmentation (SAM3)...")
+            if text_blocks:
+                print("\n[2] VLM text style enrichment...")
+                styled = self.vlm_enhancer.enrich_text_styles(context, text_blocks)
+                text_blocks = styled.get("text_blocks", text_blocks)
+                context.intermediate_results['ocr_text_blocks'] = text_blocks
+                text_style_path = os.path.join(img_output_dir, "vlm_text_result.json")
+                self._save_json(text_style_path, {"text_blocks": text_blocks, "changes": styled.get("changes", [])})
+                context.intermediate_results['vlm_text_result_json'] = text_style_path
+                context.intermediate_results['text_xml'] = self._generate_text_xml_from_blocks(image_path, text_blocks)
+                print(f"   VLM text styles: {styled.get('updated', 0)} updated")
+                print(f"   VLM text result: {text_style_path}")
 
+            print("\n[3] SAM3 segmentation (coarse prompts)...")
             if groups:
-                # Extract by group
                 all_elements = []
+                last_result = None
                 for group in groups:
-                    result = self.sam3_extractor.extract_by_group(context, group)
-                    all_elements.extend(result.elements)
+                    last_result = self.sam3_extractor.extract_by_group(context, group)
+                    all_elements.extend(last_result.elements)
                 for i, elem in enumerate(all_elements):
                     elem.id = i
                 context.elements = all_elements
-                context.canvas_width = result.canvas_width
-                context.canvas_height = result.canvas_height
+                if last_result:
+                    context.canvas_width = last_result.canvas_width
+                    context.canvas_height = last_result.canvas_height
             else:
-                # Full extraction
                 result = self.sam3_extractor.process(context)
                 if not result.success:
                     raise Exception(f"SAM3 extraction failed: {result.error_message}")
                 context.elements = result.elements
                 context.canvas_width = result.canvas_width
                 context.canvas_height = result.canvas_height
-            
-            print(f"   Elements: {len(context.elements)}")
-            vis_path = os.path.join(img_output_dir, "sam3_extraction.png")
-            self.sam3_extractor.save_visualization(context, vis_path)
-            meta_path = os.path.join(img_output_dir, "sam3_metadata.json")
-            self.sam3_extractor.save_metadata(context, meta_path)
+            print(f"   SAM3 elements: {len(context.elements)}")
+            sam3_vis_path = os.path.join(img_output_dir, "sam3_extraction.png")
+            self.sam3_extractor.save_visualization(context, sam3_vis_path)
+            sam3_meta_path = os.path.join(img_output_dir, "sam3_metadata.json")
+            self.sam3_extractor.save_metadata(context, sam3_meta_path)
+            context.intermediate_results['sam3_visualization'] = sam3_vis_path
+            context.intermediate_results['sam3_metadata_json'] = sam3_meta_path
 
-            print("\n[3] Shape/icon processing...")
+            print("\n[4] VLM segmentation refinement...")
+            seg_result = self.vlm_enhancer.refine_segmentation(context)
+            vlm_sam3_vis_path = os.path.join(img_output_dir, "sam3_vlm_refined.png")
+            self.sam3_extractor.save_visualization(context, vlm_sam3_vis_path)
+            vlm_sam3_json_path = os.path.join(img_output_dir, "sam3_vlm_refined.json")
+            self._save_json(vlm_sam3_json_path, {"elements": [e.to_dict() for e in context.elements], "changes": seg_result})
+            context.intermediate_results['sam3_vlm_refined_visualization'] = vlm_sam3_vis_path
+            context.intermediate_results['sam3_vlm_refined_json'] = vlm_sam3_json_path
+            print(f"   VLM segmentation: {seg_result.get('updated', 0)} updated, {seg_result.get('added', 0)} added")
+
+            print("\n[5] Shape/icon CV processing...")
             result = self.icon_processor.process(context)
             print(f"   Icons: {result.metadata.get('processed_count', 0)}")
             result = self.shape_processor.process(context)
             print(f"   Shapes: {result.metadata.get('processed_count', 0)}")
 
-            print("\n[4] XML fragments...")
-            self._generate_xml_fragments(context)
-            xml_count = len([e for e in context.elements if e.has_xml()])
-            print(f"   Fragments: {xml_count}")
+            print("\n[6] VLM element attribute enrichment...")
+            attr_result = self.vlm_enhancer.enrich_element_attributes(context)
+            attr_path = os.path.join(img_output_dir, "vlm_element_attributes.json")
+            self._save_json(attr_path, {"elements": [e.to_dict() for e in context.elements], "changes": attr_result.get("changes", [])})
+            context.intermediate_results['vlm_element_attributes_json'] = attr_path
+            print(f"   VLM element attributes: {attr_result.get('updated', 0)} updated")
 
-            if with_refinement:
-                print("\n[5] Metric evaluation...")
-                eval_result = self.metric_evaluator.process(context)
-                
-                overall_score = eval_result.metadata.get('overall_score', 0)
-                bad_regions = eval_result.metadata.get('bad_regions', [])
-                needs_refinement = eval_result.metadata.get('needs_refinement', False)
-                bad_region_ratio = eval_result.metadata.get('bad_region_ratio', 0)
-                pixel_coverage = eval_result.metadata.get('pixel_coverage', 0)
-                print(f"   Score: {overall_score:.1f}/100, bad regions: {len(bad_regions)} ({bad_region_ratio:.1f}%)")
-                print(f"   Coverage: {pixel_coverage:.1f}%, needs_refine: {needs_refinement}")
+            print("\n[7] PPTX generation + VLM quality loop...")
+            pptx_path = None
+            max_rounds = int((self.config.get("multimodal") or {}).get("max_quality_rounds", 3) or 3)
+            quality_threshold = float((self.config.get("multimodal") or {}).get("quality_threshold", 90) or 90)
+            for round_idx in range(1, max_rounds + 1):
+                self._reset_xml_fragments(context)
+                self._generate_xml_fragments(context)
+                merge_result = self.xml_merger.process(context)
+                if not merge_result.success:
+                    raise Exception(f"XML merge failed: {merge_result.error_message}")
+                temp_xml_path = merge_result.metadata.get('output_path')
+                pptx_path = self._export_pptx_from_xml(temp_xml_path)
+                if temp_xml_path and os.path.exists(temp_xml_path):
+                    os.remove(temp_xml_path)
+                context.intermediate_results['pptx_output'] = pptx_path
+                print(f"   Round {round_idx} PPTX: {pptx_path}")
+                validation = self.vlm_enhancer.validate_pptx_export(context, pptx_path, round_idx)
+                score = float(validation.get("score", 100) or 0)
+                print(f"   Round {round_idx} quality score: {score:.1f}/100")
+                if score >= quality_threshold or round_idx >= max_rounds:
+                    break
+                repairs = self.vlm_enhancer.apply_export_repairs(context, validation)
+                if repairs.get("updated", 0) == 0 and repairs.get("added", 0) == 0:
+                    print("   No structured repairs returned; stopping quality loop")
+                    break
 
-                REFINEMENT_THRESHOLD = 90.0
-                should_refine = overall_score < REFINEMENT_THRESHOLD and bad_regions
-
-                if should_refine:
-                    print("\n[6] Refinement...")
-                    context.intermediate_results['bad_regions'] = bad_regions
-                    refine_result = self.refinement_processor.process(context)
-                    new_count = refine_result.metadata.get('new_elements_count', 0)
-                    print(f"   Added {new_count} elements")
-                    
-                    if new_count > 0:
-                        refine_vis_path = os.path.join(img_output_dir, "refinement_result.png")
-                        new_elements = context.elements[-new_count:] if new_count > 0 else []
-                        self.refinement_processor.save_visualization(context, new_elements, refine_vis_path)
-                        print(f"   Saved: {refine_vis_path}")
-                elif not bad_regions:
-                    print("\n[6] Refinement skipped (no bad regions)")
-                else:
-                    print("\n[6] Refinement skipped (score ok)")
-
-            print("\n[7] Merge XML...")
-            merge_result = self.xml_merger.process(context)
-            
-            if not merge_result.success:
-                raise Exception(f"XML merge failed: {merge_result.error_message}")
-            
-            output_path = merge_result.metadata.get('output_path')
-            print(f"   Output: {output_path}")
             print(f"\n{'='*60}\nDone.\n{'='*60}")
-            
-            return output_path
-            
+            return pptx_path
+
         except Exception as e:
             print(f"\nFailed: {e}")
             import traceback
             traceback.print_exc()
             return None
-    
+
+    @staticmethod
+    def _save_json(path: str, data: dict) -> str:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return path
+
+    def _generate_text_xml_from_blocks(self, image_path: str, text_blocks: List[dict]) -> str:
+        """Build text draw.io XML in memory from OCR/VLM-enriched text blocks."""
+        from PIL import Image
+        with Image.open(image_path) as img:
+            image_width, image_height = img.size
+        generator = MxGraphXMLGenerator(
+            diagram_name=Path(image_path).stem,
+            page_width=image_width,
+            page_height=image_height,
+        )
+        text_cells = []
+        for block in text_blocks:
+            geo = block.get("geometry", {})
+            text_cells.append(
+                generator.create_text_cell(
+                    text=block.get("text", ""),
+                    x=geo.get("x", 0),
+                    y=geo.get("y", 0),
+                    width=max(geo.get("width", 20), 20),
+                    height=max(geo.get("height", 10), 10),
+                    font_size=block.get("font_size", 12),
+                    is_latex=block.get("is_latex", False),
+                    rotation=geo.get("rotation", 0),
+                    font_weight=block.get("font_weight"),
+                    font_style=block.get("font_style"),
+                    font_color=block.get("font_color"),
+                    font_family=block.get("font_family"),
+                    is_bold=block.get("is_bold", False),
+                    is_italic=block.get("is_italic", False),
+                )
+            )
+        return generator.generate_xml(text_cells)
+
+    @staticmethod
+    def _reset_xml_fragments(context: ProcessingContext) -> None:
+        context.xml_fragments = []
+        for elem in context.elements:
+            elem.xml_fragment = None
+
+    @staticmethod
+    def _export_pptx_from_xml(xml_path: str) -> Optional[str]:
+        if not xml_path:
+            return None
+        from pptx_exporter import (
+            export_drawio_to_pptx,
+            is_pptx_export_available,
+            missing_pptx_dependency_message,
+        )
+        if not is_pptx_export_available():
+            print(f"   PPTX skipped: {missing_pptx_dependency_message()}")
+            return None
+        return export_drawio_to_pptx(xml_path)
+
     def _generate_xml_fragments(self, context: ProcessingContext):
-        """Generate XML for elements that do not have one yet. Arrows are treated as icon (image crop)."""
+        """Generate XML for elements that do not have one yet."""
         for elem in context.elements:
             if elem.has_xml():
                 continue
             
             elem_type = elem.element_type.lower()
+
+            if elem_type in {'arrow', 'line', 'connector'}:
+                if self._is_duplicate_line_fragment(elem, context.elements):
+                    elem.processing_notes.append("Skipped duplicate line fragment contained by an arrow")
+                    continue
+                elem.xml_fragment = self._generate_edge_xml(elem, context)
+                elem.layer_level = LayerLevel.ARROW.value
+                continue
             
-            if elem_type in {'icon', 'picture', 'logo', 'chart', 'function_graph', 'arrow', 'line', 'connector'}:
-                # Image/arrow: use base64 image
+            if elem_type in {'icon', 'picture', 'logo', 'chart', 'function_graph'}:
+                # Image/icon: use base64 crop. Connectors are handled above as editable vectors.
                 if elem.base64:
                     style = f"shape=image;imageAspect=0;aspect=fixed;verticalLabelPosition=bottom;verticalAlign=top;image=data:image/png,{elem.base64}"
                 else:
-                    style = "rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;"
+                    style = "rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;"
                 elem.layer_level = LayerLevel.IMAGE.value
                 
             elif elem_type in {'section_panel', 'title_bar'}:
                 # Background/container
                 fill = elem.fill_color or "#ffffff"
                 stroke = elem.stroke_color or "#000000"
-                style = f"rounded=0;whiteSpace=wrap;html=1;fillColor={fill};strokeColor={stroke};dashed=1;"
+                stroke_width = max(1, int(elem.stroke_width or 1))
+                dashed = "dashed=1;dashPattern=3 3;" if elem.line_style in {"dashed", "dotted"} else ""
+                style = f"rounded=0;whiteSpace=wrap;html=1;fillColor={fill};strokeColor={stroke};strokeWidth={stroke_width};{dashed}"
                 elem.layer_level = LayerLevel.BACKGROUND.value
                 
             else:
                 # Basic shape
                 fill = elem.fill_color or "#ffffff"
                 stroke = elem.stroke_color or "#000000"
+                stroke_width = max(1, int(elem.stroke_width or 1))
+                dashed = "dashed=1;dashPattern=3 3;" if elem.line_style in {"dashed", "dotted"} else ""
+                common = f"whiteSpace=wrap;html=1;fillColor={fill};strokeColor={stroke};strokeWidth={stroke_width};{dashed}"
                 
                 if elem_type == 'rounded rectangle':
-                    style = f"rounded=1;whiteSpace=wrap;html=1;fillColor={fill};strokeColor={stroke};"
+                    arc = f"arcSize={int(elem.corner_radius)};" if elem.corner_radius is not None else ""
+                    style = f"rounded=1;{arc}{common}"
                 elif elem_type == 'diamond':
-                    style = f"rhombus;whiteSpace=wrap;html=1;fillColor={fill};strokeColor={stroke};"
+                    style = f"rhombus;{common}"
                 elif elem_type in {'ellipse', 'circle'}:
-                    style = f"ellipse;whiteSpace=wrap;html=1;fillColor={fill};strokeColor={stroke};"
+                    style = f"ellipse;{common}"
                 elif elem_type == 'cloud':
-                    style = f"ellipse;shape=cloud;whiteSpace=wrap;html=1;fillColor={fill};strokeColor={stroke};"
+                    style = f"ellipse;shape=cloud;{common}"
                 else:
-                    style = f"rounded=0;whiteSpace=wrap;html=1;fillColor={fill};strokeColor={stroke};"
+                    style = f"rounded=0;{common}"
                 
                 elem.layer_level = LayerLevel.BASIC_SHAPE.value
             
@@ -322,11 +531,153 @@ class Pipeline:
   <mxGeometry x="{elem.bbox.x1}" y="{elem.bbox.y1}" width="{elem.bbox.width}" height="{elem.bbox.height}" as="geometry"/>
 </mxCell>'''
 
+    def _is_duplicate_line_fragment(self, elem, elements) -> bool:
+        """Skip short line detections that are already part of an arrow mask."""
+        if elem.element_type.lower() != "line":
+            return False
+        line_box = elem.bbox.to_list()
+        line_area = max(1, elem.bbox.area)
+        for other in elements:
+            if other is elem or other.element_type.lower() not in {"arrow", "connector"}:
+                continue
+            other_box = other.bbox.to_list()
+            x1 = max(line_box[0], other_box[0])
+            y1 = max(line_box[1], other_box[1])
+            x2 = min(line_box[2], other_box[2])
+            y2 = min(line_box[3], other_box[3])
+            if x2 <= x1 or y2 <= y1:
+                continue
+            if ((x2 - x1) * (y2 - y1)) / line_area >= 0.65:
+                return True
+        return False
+
+    def _generate_edge_xml(self, elem, context: ProcessingContext = None) -> str:
+        """Generate an editable draw.io edge for arrows/lines/connectors."""
+        elem_type = elem.element_type.lower()
+        start, end = self._infer_edge_points(elem)
+        arrow_heads = elem.arrow_heads or ("end" if elem_type == "arrow" else "none")
+        start_arrow = "classic" if arrow_heads in {"start", "both"} else "none"
+        end_arrow = "classic" if arrow_heads in {"end", "both"} else "none"
+        dashed = elem.line_style in {"dashed", "dotted"} or self._edge_looks_dashed(elem, context)
+        dash_pattern = elem.dash_pattern or ("1 3" if elem.line_style == "dotted" else "3 3")
+        dash_style = f"dashed=1;dashPattern={dash_pattern};" if dashed else ""
+        stroke = elem.stroke_color or "#000000"
+        stroke_width = max(1, int(elem.stroke_width or 2))
+        style = (
+            "endArrow={};startArrow={};html=1;rounded=0;"
+            "strokeColor={};strokeWidth={};fillColor=none;{}"
+        ).format(end_arrow, start_arrow, stroke, stroke_width, dash_style)
+        elem.arrow_start = start
+        elem.arrow_end = end
+        source_attr = f' source="{elem.source_id}"' if elem.source_id is not None else ""
+        target_attr = f' target="{elem.target_id}"' if elem.target_id is not None else ""
+        return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}"{source_attr}{target_attr}>
+  <mxGeometry relative="1" as="geometry">
+    <mxPoint x="{round(start[0], 2)}" y="{round(start[1], 2)}" as="sourcePoint"/>
+    <mxPoint x="{round(end[0], 2)}" y="{round(end[1], 2)}" as="targetPoint"/>
+  </mxGeometry>
+</mxCell>'''
+
+
+    def _edge_looks_dashed(self, elem, context: ProcessingContext = None) -> bool:
+        """Heuristically detect dashed/dotted connectors from the source crop.
+
+        SAM3 only returns element type and geometry, so dashed source lines need a
+        lightweight pixel check before DrawIO/PPTX export. We sample the long axis
+        of thin line/connector detections and mark it dashed when ink occupancy is
+        broken into several separated runs.
+        """
+        if elem.element_type.lower() not in {"arrow", "line", "connector"}:
+            return False
+        if context is None or not getattr(context, "image_path", None):
+            return False
+        bbox = elem.bbox
+        if max(bbox.width, bbox.height) < 40:
+            return False
+        try:
+            from PIL import Image
+            import numpy as np
+            with Image.open(context.image_path) as img:
+                gray = img.convert("L")
+                x1, y1, x2, y2 = map(int, bbox.to_list())
+                pad = 3
+                x1 = max(0, x1 - pad)
+                y1 = max(0, y1 - pad)
+                x2 = min(gray.width, x2 + pad)
+                y2 = min(gray.height, y2 + pad)
+                crop = np.array(gray.crop((x1, y1, x2, y2)))
+            if crop.size == 0:
+                return False
+            ink = crop < 180
+            profile = ink.any(axis=0) if bbox.width >= bbox.height else ink.any(axis=1)
+            runs = []
+            run = 0
+            for value in profile:
+                if bool(value):
+                    run += 1
+                elif run:
+                    runs.append(run)
+                    run = 0
+            if run:
+                runs.append(run)
+            if len(runs) < 3:
+                return False
+            coverage = sum(runs) / max(1, len(profile))
+            return coverage < 0.72
+        except Exception:
+            return False
+
+    def _infer_edge_points(self, elem) -> tuple:
+        """Infer connector endpoints from SAM3 bbox/polygon, preserving arrow direction where possible."""
+        bbox = elem.bbox
+        cx = (bbox.x1 + bbox.x2) / 2
+        cy = (bbox.y1 + bbox.y2) / 2
+        elem_type = elem.element_type.lower()
+
+        if elem_type in {"line", "connector"} or not elem.polygon:
+            if bbox.width >= bbox.height:
+                return (bbox.x1, cy), (bbox.x2, cy)
+            return (cx, bbox.y1), (cx, bbox.y2)
+
+        points = [(float(p[0]), float(p[1])) for p in elem.polygon if len(p) >= 2]
+        if len(points) < 2:
+            if bbox.width >= bbox.height:
+                return (bbox.x1, cy), (bbox.x2, cy)
+            return (cx, bbox.y1), (cx, bbox.y2)
+
+        tip = self._find_sharpest_polygon_point(points)
+        start = max(points, key=lambda p: (p[0] - tip[0]) ** 2 + (p[1] - tip[1]) ** 2)
+        return start, tip
+
+    def _find_sharpest_polygon_point(self, points):
+        """Find the most likely arrow head tip as the sharpest polygon vertex."""
+        if len(points) < 3:
+            return points[-1]
+        import math
+        best_point = points[0]
+        best_angle = 360.0
+        n = len(points)
+        for i, point in enumerate(points):
+            prev_p = points[(i - 1) % n]
+            next_p = points[(i + 1) % n]
+            v1 = (prev_p[0] - point[0], prev_p[1] - point[1])
+            v2 = (next_p[0] - point[0], next_p[1] - point[1])
+            len1 = math.hypot(*v1)
+            len2 = math.hypot(*v2)
+            if len1 <= 0 or len2 <= 0:
+                continue
+            cos_a = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (len1 * len2)))
+            angle = math.degrees(math.acos(cos_a))
+            if angle < best_angle:
+                best_angle = angle
+                best_point = point
+        return best_point
+
 
 # ======================== CLI ========================
 def main():
     parser = argparse.ArgumentParser(
-        description="Edit Banana — image to DrawIO",
+        description="Edit Banana — image to editable PPTX",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
