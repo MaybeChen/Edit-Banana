@@ -28,7 +28,29 @@ PROMPT_GROUPS_SCHEMA: Dict[str, Any] = {
     },
 }
 
-LAYOUT_RELATIONS_SCHEMA: Dict[str, Any] = {"type": "object"}
+LAYOUT_RELATIONS_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "required": ["relationships"],
+    "properties": {
+        "relationships": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["edge_id"],
+                "properties": {
+                    "edge_id": {"type": ["number", "string"]},
+                    "source_id": {"type": ["number", "string", "null"]},
+                    "target_id": {"type": ["number", "string", "null"]},
+                    "line_style": {"type": ["string", "null"]},
+                    "end_arrow": {"type": ["string", "null"]},
+                    "arrow_style": {"type": ["string", "null"]},
+                    "confidence": {"type": "number"},
+                    "reason": {"type": "string"},
+                },
+            },
+        },
+    },
+}
 EXPORT_VALIDATION_SCHEMA: Dict[str, Any] = {"type": "object"}
 REGION_ANALYSIS_SCHEMA: Dict[str, Any] = {
     "type": "object",
