@@ -40,6 +40,7 @@ from modules import (
     MetricEvaluator,
     RefinementProcessor,
     VLMElementRefiner,
+    VLMLayoutRefiner,
     
     # Text (modules/text/)
     TextRestorer,
@@ -113,6 +114,7 @@ class Pipeline:
         self._metric_evaluator = None
         self._refinement_processor = None
         self._vlm_element_refiner = None
+        self._vlm_layout_refiner = None
     
     @property
     def text_restorer(self):
@@ -171,6 +173,13 @@ class Pipeline:
             vlm_config = self.config.get("multimodal") or {}
             self._vlm_element_refiner = VLMElementRefiner(vlm_config)
         return self._vlm_element_refiner
+
+    @property
+    def vlm_layout_refiner(self) -> VLMLayoutRefiner:
+        if self._vlm_layout_refiner is None:
+            vlm_config = self.config.get("multimodal") or {}
+            self._vlm_layout_refiner = VLMLayoutRefiner(vlm_config)
+        return self._vlm_layout_refiner
     
     def process_image(self,
                       image_path: str,
@@ -267,13 +276,22 @@ class Pipeline:
             result = self.shape_processor.process(context)
             print(f"   Shapes: {result.metadata.get('processed_count', 0)}")
 
-            print("\n[5] XML fragments...")
+            print("\n[5] VLM layout refinement...")
+            result = self.vlm_layout_refiner.process(context)
+            if result.metadata.get("skipped_reason"):
+                print(f"   Skipped: {result.metadata.get('skipped_reason')}")
+            else:
+                print(f"   Edge relations: {result.metadata.get('updated_count', 0)}/{result.metadata.get('processed_count', 0)}")
+            if result.metadata.get("vlm_layout_json"):
+                print(f"   Saved: {result.metadata.get('vlm_layout_json')}")
+
+            print("\n[6] XML fragments...")
             self._generate_xml_fragments(context)
             xml_count = len([e for e in context.elements if e.has_xml()])
             print(f"   Fragments: {xml_count}")
 
             if with_refinement:
-                print("\n[6] Metric evaluation...")
+                print("\n[7] Metric evaluation...")
                 eval_result = self.metric_evaluator.process(context)
                 
                 overall_score = eval_result.metadata.get('overall_score', 0)
@@ -288,7 +306,7 @@ class Pipeline:
                 should_refine = overall_score < REFINEMENT_THRESHOLD and bad_regions
 
                 if should_refine:
-                    print("\n[7] Refinement...")
+                    print("\n[8] Refinement...")
                     context.intermediate_results['bad_regions'] = bad_regions
                     refine_result = self.refinement_processor.process(context)
                     new_count = refine_result.metadata.get('new_elements_count', 0)
@@ -300,11 +318,11 @@ class Pipeline:
                         self.refinement_processor.save_visualization(context, new_elements, refine_vis_path)
                         print(f"   Saved: {refine_vis_path}")
                 elif not bad_regions:
-                    print("\n[7] Refinement skipped (no bad regions)")
+                    print("\n[8] Refinement skipped (no bad regions)")
                 else:
-                    print("\n[7] Refinement skipped (score ok)")
+                    print("\n[8] Refinement skipped (score ok)")
 
-            print("\n[8] Merge XML...")
+            print("\n[9] Merge XML...")
             merge_result = self.xml_merger.process(context)
             
             if not merge_result.success:
@@ -314,7 +332,7 @@ class Pipeline:
             print(f"   Output: {output_path}")
 
             if output_path:
-                print("\n[9] PowerPoint export...")
+                print("\n[10] PowerPoint export...")
                 from pptx_exporter import (
                     export_drawio_to_pptx,
                     is_pptx_export_available,
@@ -415,9 +433,24 @@ class Pipeline:
     def _generate_edge_xml(self, elem, context: ProcessingContext = None) -> str:
         """Generate an editable draw.io edge for arrows/lines/connectors."""
         elem_type = elem.element_type.lower()
-        start, end = self._infer_edge_points(elem)
-        end_arrow = "classic" if elem_type == "arrow" else "none"
-        dashed = elem.line_style == "dashed" or self._edge_looks_dashed(elem, context)
+        source_elem = self._find_element_by_id(context, getattr(elem, "source_id", None))
+        target_elem = self._find_element_by_id(context, getattr(elem, "target_id", None))
+        has_vlm_relation = source_elem is not None or target_elem is not None
+
+        if has_vlm_relation:
+            start = source_elem.bbox.center if source_elem is not None else self._infer_edge_points(elem)[0]
+            end = target_elem.bbox.center if target_elem is not None else self._infer_edge_points(elem)[1]
+        else:
+            start, end = self._infer_edge_points(elem)
+
+        end_arrow = elem.arrow_style if elem.arrow_style else ("classic" if elem_type == "arrow" else "none")
+        if end_arrow not in {"none", "classic", "open", "block"}:
+            end_arrow = "classic" if elem_type == "arrow" else "none"
+
+        if elem.line_style:
+            dashed = elem.line_style in {"dashed", "dotted"}
+        else:
+            dashed = self._edge_looks_dashed(elem, context)
         dash_style = "dashed=1;dashPattern=3 3;" if dashed else ""
         style = (
             "endArrow={};startArrow=none;html=1;rounded=0;"
@@ -425,13 +458,27 @@ class Pipeline:
         ).format(end_arrow, dash_style)
         elem.arrow_start = start
         elem.arrow_end = end
-        return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}">
+        source_attr = f' source="{source_elem.id}"' if source_elem is not None else ""
+        target_attr = f' target="{target_elem.id}"' if target_elem is not None else ""
+        return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}"{source_attr}{target_attr}>
   <mxGeometry relative="1" as="geometry">
     <mxPoint x="{round(start[0], 2)}" y="{round(start[1], 2)}" as="sourcePoint"/>
     <mxPoint x="{round(end[0], 2)}" y="{round(end[1], 2)}" as="targetPoint"/>
   </mxGeometry>
 </mxCell>'''
 
+    def _find_element_by_id(self, context: ProcessingContext, element_id):
+        """Return the element with the given id from context, if present."""
+        if context is None or element_id is None:
+            return None
+        try:
+            wanted = int(element_id)
+        except (TypeError, ValueError):
+            return None
+        for candidate in context.elements:
+            if candidate.id == wanted:
+                return candidate
+        return None
 
     def _edge_looks_dashed(self, elem, context: ProcessingContext = None) -> bool:
         """Heuristically detect dashed/dotted connectors from the source crop.
