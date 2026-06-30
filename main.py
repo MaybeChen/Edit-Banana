@@ -41,6 +41,7 @@ from modules import (
     RefinementProcessor,
     VLMElementRefiner,
     VLMLayoutRefiner,
+    VLMExportValidator,
     
     # Text (modules/text/)
     TextRestorer,
@@ -115,6 +116,7 @@ class Pipeline:
         self._refinement_processor = None
         self._vlm_element_refiner = None
         self._vlm_layout_refiner = None
+        self._vlm_export_validator = None
     
     @property
     def text_restorer(self):
@@ -181,6 +183,13 @@ class Pipeline:
             self._vlm_layout_refiner = VLMLayoutRefiner(vlm_config)
         return self._vlm_layout_refiner
     
+    @property
+    def vlm_export_validator(self) -> VLMExportValidator:
+        if self._vlm_export_validator is None:
+            vlm_config = self.config.get("multimodal") or {}
+            self._vlm_export_validator = VLMExportValidator(vlm_config)
+        return self._vlm_export_validator
+
     def process_image(self,
                       image_path: str,
                       output_dir: str = None,
@@ -339,6 +348,17 @@ class Pipeline:
                     missing_pptx_dependency_message,
                 )
                 if is_pptx_export_available():
+                    export_config = self.config.get("export") or {}
+                    if export_config.get("vlm_validate_before_pptx", False):
+                        print("   VLM export validation...")
+                        validation = self.vlm_export_validator.validate_before_pptx(
+                            output_path,
+                            image_path,
+                            context.intermediate_results.get("drawio_preview_path") or context.intermediate_results.get("rendered_preview_path"),
+                            img_output_dir,
+                        )
+                        context.intermediate_results["vlm_export_warnings_json"] = validation.get("warnings_path")
+                        print(f"   VLM warnings: {validation.get('warnings_path')} (fixes: {len(validation.get('auto_fixes', []))})")
                     pptx_path = export_drawio_to_pptx(output_path)
                     context.intermediate_results['pptx_output'] = pptx_path
                     print(f"   PPTX: {pptx_path}")
