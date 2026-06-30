@@ -136,6 +136,13 @@ multimodal:
 # rmbg:
 #   model_path: "models/rmbg/model.onnx"
 
+# Export options
+export:
+  # Optional VLM validation/repair pass before PPTX export. When enabled, the
+  # pipeline compares the original image, an optional draw.io preview, and the
+  # merged XML summary, applies safe fixes, and writes vlm_export_warnings.json.
+  vlm_validate_before_pptx: false
+
 # Paths (optional)
 paths: {}
 
