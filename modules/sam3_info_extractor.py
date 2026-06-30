@@ -6,6 +6,8 @@ Prompt groups and thresholds are loaded from config.yaml.
 import os
 import sys
 import cv2
+import copy
+import json
 import numpy as np
 import torch
 import yaml
@@ -33,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from .base import BaseProcessor, ProcessingContext, ModelWrapper
 from .data_types import ElementInfo, BoundingBox, ProcessingResult
+from .vlm.prompt_planner import VLMPromptPlanner
 
 
 # ======================== 提示词分组枚举 ========================
@@ -108,6 +111,8 @@ class ConfigLoader:
             'sam3': {
                 'checkpoint_path': '',
                 'bpe_path': '',
+                'use_vlm_prompts': False,
+                'vlm_prompt_max_per_group': 8,
             },
             'prompt_groups': {
                 'image': {
@@ -237,6 +242,12 @@ class ConfigLoader:
         """获取SAM3配置"""
         config = cls.load_config()
         return config.get('sam3', {})
+
+    @classmethod
+    def get_multimodal_config(cls) -> dict:
+        """获取多模态/VLM配置"""
+        config = cls.load_config()
+        return config.get('multimodal', {})
 
 
 # ======================== SAM3模型封装 ========================
@@ -535,6 +546,7 @@ class Sam3InfoExtractor(BaseProcessor):
         
         # 保存当前图像路径（供去重分析使用）
         self._current_image_path = context.image_path
+        self.prompt_groups = self._build_prompt_groups_for_image(context)
         
         self.load_model()
         
@@ -598,12 +610,68 @@ class Sam3InfoExtractor(BaseProcessor):
                 'group_stats': group_stats,
                 'total_before_dedup': sum(group_stats.values()),
                 'total_after_dedup': len(all_elements),
-                'groups_processed': list(group_stats.keys())
+                'groups_processed': list(group_stats.keys()),
+                'vlm_prompts': context.intermediate_results.get('vlm_prompts', {}),
             }
         )
         
         self._log(f"Done: {len(all_elements)} elements (before dedup: {sum(group_stats.values())})")
         return result
+
+    def _build_prompt_groups_for_image(self, context: ProcessingContext) -> Dict[PromptGroup, PromptGroupConfig]:
+        """Load default prompt groups and optionally inject image-specific VLM prompts."""
+        prompt_groups = copy.deepcopy(ConfigLoader.get_prompt_groups())
+        sam3_config = ConfigLoader.get_sam3_config()
+        use_vlm_prompts = bool(sam3_config.get('use_vlm_prompts', False))
+        max_per_group = int(sam3_config.get('vlm_prompt_max_per_group', 8) or 8)
+        vlm_record = {
+            'enabled': use_vlm_prompts,
+            'image_path': context.image_path,
+            'max_per_group': max_per_group,
+            'dynamic_prompts': {key.value: [] for key in PromptGroup},
+            'merged_prompts': {},
+            'error': None,
+        }
+
+        if use_vlm_prompts:
+            try:
+                planner = VLMPromptPlanner(ConfigLoader.get_multimodal_config())
+                dynamic_prompts = planner.plan(context.image_path, max_per_group=max_per_group)
+                mapping = {
+                    'image': PromptGroup.IMAGE,
+                    'shape': PromptGroup.BASIC_SHAPE,
+                    'arrow': PromptGroup.ARROW,
+                    'background': PromptGroup.BACKGROUND,
+                }
+                for key, group_type in mapping.items():
+                    prompts = dynamic_prompts.get(key, [])[:max_per_group]
+                    vlm_record['dynamic_prompts'][group_type.value] = prompts
+                    if group_type in prompt_groups:
+                        prompt_groups[group_type].prompts = ConfigLoader._merge_prompts(
+                            prompt_groups[group_type].prompts,
+                            prompts,
+                        )
+                self._log(f"VLM动态提示词已注入: {sum(len(v) for v in dynamic_prompts.values())}个")
+            except Exception as exc:
+                vlm_record['error'] = str(exc)
+                self._log(f"VLM动态提示词跳过: {exc}")
+
+        vlm_record['merged_prompts'] = {
+            group_type.value: group_config.prompts
+            for group_type, group_config in prompt_groups.items()
+        }
+        context.intermediate_results['vlm_prompts'] = vlm_record
+        self._save_vlm_prompts(context, vlm_record)
+        return prompt_groups
+
+    def _save_vlm_prompts(self, context: ProcessingContext, vlm_record: Dict[str, Any]):
+        """Save prompts used for this image to output_dir/vlm_prompts.json for debugging."""
+        output_dir = context.output_dir or "./output"
+        self._ensure_output_dir(output_dir)
+        output_path = os.path.join(output_dir, "vlm_prompts.json")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(vlm_record, f, indent=2, ensure_ascii=False)
+        self._log(f"VLM提示词已保存: {output_path}")
 
     def extract_by_group(self, context: ProcessingContext, 
                          group_type: PromptGroup) -> ProcessingResult:
