@@ -73,6 +73,16 @@ def load_config() -> dict:
                 'input_dir': './input',
                 'output_dir': './output',
             },
+            'multimodal': {
+                'mode': 'api',
+                'api_key': '',
+                'base_url': '',
+                'model': '',
+                'x_hw_id': '',
+                'x_hw_appkey': '',
+                'max_tokens': 4000,
+                'timeout': 60,
+            },
             'ocr': {
                 'engine': 'paddleocr',
                 'paddleocr': {
@@ -341,24 +351,13 @@ class Pipeline:
             print(f"   Output: {output_path}")
 
             if output_path:
-                print("\n[10] PowerPoint export...")
+                print("\n[8] PowerPoint export...")
                 from pptx_exporter import (
                     export_drawio_to_pptx,
                     is_pptx_export_available,
                     missing_pptx_dependency_message,
                 )
                 if is_pptx_export_available():
-                    export_config = self.config.get("export") or {}
-                    if export_config.get("vlm_validate_before_pptx", False):
-                        print("   VLM export validation...")
-                        validation = self.vlm_export_validator.validate_before_pptx(
-                            output_path,
-                            image_path,
-                            context.intermediate_results.get("drawio_preview_path") or context.intermediate_results.get("rendered_preview_path"),
-                            img_output_dir,
-                        )
-                        context.intermediate_results["vlm_export_warnings_json"] = validation.get("warnings_path")
-                        print(f"   VLM warnings: {validation.get('warnings_path')} (fixes: {len(validation.get('auto_fixes', []))})")
                     pptx_path = export_drawio_to_pptx(output_path)
                     context.intermediate_results['pptx_output'] = pptx_path
                     print(f"   PPTX: {pptx_path}")
@@ -453,24 +452,9 @@ class Pipeline:
     def _generate_edge_xml(self, elem, context: ProcessingContext = None) -> str:
         """Generate an editable draw.io edge for arrows/lines/connectors."""
         elem_type = elem.element_type.lower()
-        source_elem = self._find_element_by_id(context, getattr(elem, "source_id", None))
-        target_elem = self._find_element_by_id(context, getattr(elem, "target_id", None))
-        has_vlm_relation = source_elem is not None or target_elem is not None
-
-        if has_vlm_relation:
-            start = source_elem.bbox.center if source_elem is not None else self._infer_edge_points(elem)[0]
-            end = target_elem.bbox.center if target_elem is not None else self._infer_edge_points(elem)[1]
-        else:
-            start, end = self._infer_edge_points(elem)
-
-        end_arrow = elem.arrow_style if elem.arrow_style else ("classic" if elem_type == "arrow" else "none")
-        if end_arrow not in {"none", "classic", "open", "block"}:
-            end_arrow = "classic" if elem_type == "arrow" else "none"
-
-        if elem.line_style:
-            dashed = elem.line_style in {"dashed", "dotted"}
-        else:
-            dashed = self._edge_looks_dashed(elem, context)
+        start, end = self._infer_edge_points(elem)
+        end_arrow = "classic" if elem_type == "arrow" else "none"
+        dashed = elem.line_style == "dashed" or self._edge_looks_dashed(elem, context)
         dash_style = "dashed=1;dashPattern=3 3;" if dashed else ""
         style = (
             "endArrow={};startArrow=none;html=1;rounded=0;"
@@ -478,27 +462,13 @@ class Pipeline:
         ).format(end_arrow, dash_style)
         elem.arrow_start = start
         elem.arrow_end = end
-        source_attr = f' source="{source_elem.id}"' if source_elem is not None else ""
-        target_attr = f' target="{target_elem.id}"' if target_elem is not None else ""
-        return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}"{source_attr}{target_attr}>
+        return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}">
   <mxGeometry relative="1" as="geometry">
     <mxPoint x="{round(start[0], 2)}" y="{round(start[1], 2)}" as="sourcePoint"/>
     <mxPoint x="{round(end[0], 2)}" y="{round(end[1], 2)}" as="targetPoint"/>
   </mxGeometry>
 </mxCell>'''
 
-    def _find_element_by_id(self, context: ProcessingContext, element_id):
-        """Return the element with the given id from context, if present."""
-        if context is None or element_id is None:
-            return None
-        try:
-            wanted = int(element_id)
-        except (TypeError, ValueError):
-            return None
-        for candidate in context.elements:
-            if candidate.id == wanted:
-                return candidate
-        return None
 
     def _edge_looks_dashed(self, elem, context: ProcessingContext = None) -> bool:
         """Heuristically detect dashed/dotted connectors from the source crop.

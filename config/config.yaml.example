@@ -123,6 +123,9 @@ multimodal:
   api_key: "YOUR_API_KEY_HERE"
   base_url: "YOUR_BASE_URL_HERE"
   model: "your-vlm-model-name"
+  # Custom VLM service auth headers. Requests include X-HW-ID and X-HW-APPKEY when set.
+  x_hw_id: "YOUR_X_HW_ID_HERE"
+  x_hw_appkey: "YOUR_X_HW_APPKEY_HERE"
   local_base_url: "http://localhost:11434/v1"
   local_api_key: "ollama"
   local_model: "local-model-name"
