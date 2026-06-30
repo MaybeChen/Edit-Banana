@@ -21,8 +21,9 @@ warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API
 warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available. Disabling", category=UserWarning)
 warnings.filterwarnings("ignore", message="Importing from timm.models.layers is deprecated.*", category=FutureWarning)
 
-from sam3.model_builder import build_sam3_image_model
-from sam3.model.sam3_image_processor import Sam3Processor
+from sam3_imports import import_sam3_image_components
+
+build_sam3_image_model, Sam3Processor = import_sam3_image_components()
 
 
 def _resolve_device(device: Optional[str]) -> str:

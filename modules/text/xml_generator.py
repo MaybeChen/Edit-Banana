@@ -103,9 +103,9 @@ class MxGraphXMLGenerator:
         style="text;fontSize=12;fontStyle=1;fontColor=#000000;"
         """
         styles = [
-            "text", "html=1", "whiteSpace=nowrap", "autosize=1", "resizable=0",
+            "text", "html=1", "whiteSpace=wrap", "resizable=0",
             f"fontSize={int(cell_data.font_size)}", "align=center",
-            "verticalAlign=middle", "overflow=visible",
+            "verticalAlign=middle", "overflow=hidden", "spacing=0", "labelPadding=0",
         ]
         
         # 字体样式：1=粗体, 2=斜体, 3=粗斜体
@@ -267,7 +267,7 @@ class MxGraphXMLGenerator:
         
         # 默认字体
         if font_family is None:
-            font_family = "Arial"
+            font_family = "Microsoft YaHei"
         
         return TextCellData(
             cell_id=self._get_next_id(),
