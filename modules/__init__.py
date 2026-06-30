@@ -20,6 +20,7 @@ from .icon_picture_processor import IconPictureProcessor
 from .basic_shape_processor import BasicShapeProcessor
 from .metric_evaluator import MetricEvaluator
 from .refinement_processor import RefinementProcessor
+from .vlm_element_refiner import VLMElementRefiner
 
 # Text (modules/text/); optional if ocr/coord_processor missing
 try:
@@ -53,4 +54,5 @@ __all__ = [
     'BasicShapeProcessor',
     'MetricEvaluator',
     'RefinementProcessor',
+    'VLMElementRefiner',
 ]
