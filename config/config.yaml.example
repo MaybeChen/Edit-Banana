@@ -145,16 +145,26 @@ multimodal:
   log_response: true
   response_log_chars: 4000
   max_elements_for_vlm: 80
+  # Force SAM3 back to coarse recall prompts; VLM/CV fill detailed attributes later.
+  coarse_sam_prompts: true
   use_for:
-    prompt_planning: true   # Add image-specific SAM3 prompts before segmentation
-    element_refine: true    # Correct SAM3 element types/line styles after segmentation
-    region_refine: true     # Structure bad regions before picture fallback refinement
-    layout_refine: true     # Correct connector source/target and dashed styles
-    export_validate: true   # Save a final VLM export quality report before PPTX
+    prompt_planning: false       # New flow keeps SAM3 prompts coarse by default; enable only to add image-specific coarse prompts.
+    text_style: true             # Enrich PaddleOCR text blocks with font family/size/color/style.
+    segmentation_refine: true    # Add/correct coarse SAM3 objects before attribute enrichment.
+    element_refine: false        # Legacy type/line-style correction pass; superseded by segmentation_refine + element_attributes.
+    region_refine: false         # Legacy metric bad-region pass; quality loop now uses export_validate repairs.
+    layout_refine: false         # Legacy connector-only pass; superseded by element_attributes.
+    element_attributes: true     # Add per-element export attributes (arrow heads, line style, colors, rounded corners, endpoints).
+    export_validate: true        # Score final PPTX vs original image and propose repairs.
+  quality_threshold: 90
+  max_quality_rounds: 3
   thresholds:
     element_refine_confidence: 0.75
     region_refine_confidence: 0.70
     layout_refine_confidence: 0.70
+    text_style_confidence: 0.65
+    segmentation_refine_confidence: 0.70
+    element_attribute_confidence: 0.65
   ca_cert_path: false
   proxy: ""
 
