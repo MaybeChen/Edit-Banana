@@ -290,7 +290,7 @@ def get_layer_level(element_type: str) -> int:
     element_type = element_type.lower()
     
     # 背景/容器类（最底层）
-    if element_type in {'section_panel', 'title_bar'}:
+    if element_type in {'section_panel', 'title_bar', 'container'}:
         return LayerLevel.BACKGROUND.value
     
     # 箭头/连接线
