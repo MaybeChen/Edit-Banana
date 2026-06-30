@@ -9,6 +9,7 @@ directly at the service endpoint.
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -55,6 +56,16 @@ class VLMClient:
             return base_url
         return f"{base_url}/chat/completions"
 
+    @staticmethod
+    def _mask_secret(value: str) -> str:
+        """Mask secret values before logging."""
+        value = str(value or "")
+        if not value:
+            return ""
+        if len(value) <= 8:
+            return "****"
+        return f"{value[:4]}...{value[-4:]}"
+
     def _headers(self) -> Dict[str, str]:
         """Build headers required by the custom VLM service."""
         headers = {"Content-Type": "application/json"}
@@ -65,6 +76,46 @@ class VLMClient:
         if self.x_hw_appkey and self.x_hw_appkey not in _PLACEHOLDER_VALUES:
             headers["X-HW-APPKEY"] = str(self.x_hw_appkey)
         return headers
+
+    def _safe_headers_for_log(self, headers: Dict[str, str]) -> Dict[str, str]:
+        """Return headers with sensitive values masked for logs."""
+        safe = dict(headers)
+        for key in ("Authorization", "X-HW-ID", "X-HW-APPKEY"):
+            if key in safe:
+                safe[key] = self._mask_secret(safe[key])
+        return safe
+
+    @staticmethod
+    def _summarize_content_part(part: Any) -> Any:
+        """Summarize multimodal content without dumping base64 image data."""
+        if not isinstance(part, dict):
+            return part
+        if part.get("type") == "image_url":
+            image_url = part.get("image_url") or {}
+            url = str(image_url.get("url", ""))
+            if url.startswith("data:"):
+                prefix = url.split(",", 1)[0]
+                return {"type": "image_url", "image_url": {"url": f"{prefix},<base64 omitted>"}}
+        if part.get("type") == "text":
+            text = str(part.get("text", ""))
+            if len(text) > 500:
+                part = dict(part)
+                part["text"] = f"{text[:500]}...<truncated {len(text) - 500} chars>"
+        return part
+
+    @classmethod
+    def _summarize_messages_for_log(cls, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Summarize messages for request logs."""
+        summarized = []
+        for message in messages:
+            msg = dict(message)
+            content = msg.get("content")
+            if isinstance(content, list):
+                msg["content"] = [cls._summarize_content_part(part) for part in content]
+            elif isinstance(content, str) and len(content) > 500:
+                msg["content"] = f"{content[:500]}...<truncated {len(content) - 500} chars>"
+            summarized.append(msg)
+        return summarized
 
     @staticmethod
     def _image_to_data_url(image_path: str) -> str:
@@ -87,10 +138,29 @@ class VLMClient:
         }
         payload.update(overrides)
 
+        url = self._request_url()
+        headers = self._headers()
+        log_payload = dict(payload)
+        log_payload["messages"] = self._summarize_messages_for_log(messages)
+        print(
+            "[VLMClient] request "
+            + json.dumps(
+                {
+                    "url": url,
+                    "model": model,
+                    "timeout": self.timeout,
+                    "headers": self._safe_headers_for_log(headers),
+                    "payload": log_payload,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+
         response = requests.post(
-            self._request_url(),
+            url,
             json=payload,
-            headers=self._headers(),
+            headers=headers,
             timeout=self.timeout,
         )
         response.raise_for_status()
