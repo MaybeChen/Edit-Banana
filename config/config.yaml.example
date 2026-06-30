@@ -128,6 +128,9 @@ multimodal:
   # If base_url is already the exact Postman URL, set base_url_is_endpoint: true.
   base_url_is_endpoint: false
   endpoint_path: "chat/completions"
+  # Huawei MaaS expects image_url to be a plain base64 string. Use openai_data_url for OpenAI-style {url:data:...}.
+  image_url_format: "raw_base64"
+  image_content_order: "text_first"
   # Custom VLM service auth headers. Requests include X-HW-ID and X-HW-APPKEY when set.
   x_hw_id: "YOUR_X_HW_ID_HERE"
   x_hw_appkey: "YOUR_X_HW_APPKEY_HERE"
@@ -137,6 +140,7 @@ multimodal:
   force_vlm_ocr: false
   max_tokens: 4000
   timeout: 60
+  verify_ssl: true
   max_elements_for_vlm: 80
   use_for:
     prompt_planning: true   # Add image-specific SAM3 prompts before segmentation

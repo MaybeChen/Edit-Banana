@@ -48,6 +48,11 @@ class VLMClient:
         self.max_tokens = int(self.config.get("max_tokens", 4000) or 4000)
         self.endpoint_path = self.config.get("endpoint_path", "chat/completions")
         self.base_url_is_endpoint = bool(self.config.get("base_url_is_endpoint", False))
+        self.image_url_format = str(self.config.get("image_url_format", "raw_base64") or "raw_base64")
+        self.image_content_order = str(self.config.get("image_content_order", "text_first") or "text_first")
+        self.verify_ssl = self.config.get("verify_ssl", True)
+        self.ca_cert_path = self.config.get("ca_cert_path")
+        self.proxy = self.config.get("proxy") or ""
 
     def _request_url(self) -> str:
         """Resolve the request URL from configured base_url.
@@ -105,11 +110,20 @@ class VLMClient:
         if not isinstance(part, dict):
             return part
         if part.get("type") == "image_url":
-            image_url = part.get("image_url") or {}
-            url = str(image_url.get("url", ""))
-            if url.startswith("data:"):
-                prefix = url.split(",", 1)[0]
-                return {"type": "image_url", "image_url": {"url": f"{prefix},<base64 omitted>"}}
+            image_url = part.get("image_url")
+            if isinstance(image_url, dict):
+                url = str(image_url.get("url", ""))
+                if url.startswith("data:"):
+                    prefix = url.split(",", 1)[0]
+                    return {"type": "image_url", "image_url": {"url": f"{prefix},<base64 omitted>"}}
+                if len(url) > 80:
+                    return {"type": "image_url", "image_url": {"url": "<image omitted>"}}
+            elif isinstance(image_url, str):
+                if image_url.startswith("data:"):
+                    prefix = image_url.split(",", 1)[0]
+                    return {"type": "image_url", "image_url": f"{prefix},<base64 omitted>"}
+                if len(image_url) > 80:
+                    return {"type": "image_url", "image_url": "<base64 omitted>"}
         if part.get("type") == "text":
             text = str(part.get("text", ""))
             if len(text) > 500:
@@ -132,12 +146,42 @@ class VLMClient:
         return summarized
 
     @staticmethod
+    def _image_to_base64(image_path: str) -> str:
+        """Encode a local image as a plain base64 string."""
+        return base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
+
+    @staticmethod
     def _image_to_data_url(image_path: str) -> str:
-        """Encode a local image as a data URL for multimodal chat payloads."""
+        """Encode a local image as a data URL for OpenAI-style payloads."""
         path = Path(image_path)
         mime_type = mimetypes.guess_type(path.name)[0] or "image/png"
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
         return f"data:{mime_type};base64,{encoded}"
+
+    def _image_content_part(self, image_path: str) -> Dict[str, Any]:
+        """Build the image content part expected by the configured service."""
+        image_format = self.image_url_format.lower().replace("-", "_")
+        if image_format in {"raw_base64", "base64", "plain_base64"}:
+            return {"type": "image_url", "image_url": self._image_to_base64(image_path)}
+        if image_format in {"data_url", "data_url_string"}:
+            return {"type": "image_url", "image_url": self._image_to_data_url(image_path)}
+        if image_format in {"openai", "openai_data_url", "object", "object_data_url"}:
+            return {"type": "image_url", "image_url": {"url": self._image_to_data_url(image_path)}}
+        raise ValueError(
+            "multimodal.image_url_format must be one of raw_base64, data_url_string, or openai_data_url"
+        )
+
+    def _request_verify(self) -> Any:
+        """Resolve TLS verification behavior for requests."""
+        if self.ca_cert_path and self.ca_cert_path not in (False, "false", "False"):
+            return self.ca_cert_path
+        return bool(self.verify_ssl)
+
+    def _request_proxies(self) -> Optional[Dict[str, str]]:
+        """Resolve optional proxy configuration."""
+        if not self.proxy:
+            return None
+        return {"http": str(self.proxy), "https": str(self.proxy)}
 
     def request(self, messages: List[Dict[str, Any]], **overrides: Any) -> Dict[str, Any]:
         """Send a request to the configured VLM service."""
@@ -176,6 +220,8 @@ class VLMClient:
             json=payload,
             headers=headers,
             timeout=self.timeout,
+            verify=self._request_verify(),
+            proxies=self._request_proxies(),
         )
         if response.status_code >= 400:
             print(
@@ -199,17 +245,13 @@ class VLMClient:
 
     def analyze_image(self, image_path: str, prompt: str, **overrides: Any) -> Dict[str, Any]:
         """Send a single image plus text prompt to the VLM service."""
-        # Huawei MaaS/OpenAI-compatible vision examples place image_url before
-        # text; keep that order for stricter gateways.
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": self._image_to_data_url(image_path)}},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ]
+        text_part = {"type": "text", "text": prompt}
+        image_part = self._image_content_part(image_path)
+        if self.image_content_order.lower() in {"image_first", "image-url-first", "image_url_first"}:
+            content = [image_part, text_part]
+        else:
+            content = [text_part, image_part]
+        messages = [{"role": "user", "content": content}]
         return self.chat(messages, **overrides)
 
 
