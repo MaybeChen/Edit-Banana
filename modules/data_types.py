@@ -123,6 +123,9 @@ class ElementInfo:
     arrow_end: Optional[tuple] = None            # 箭头终点
     vector_points: Optional[List[List[int]]] = None  # 矢量箭头路径点 [[x,y], [x,y], ...]
     arrow_style: Optional[str] = None            # 箭头样式（classic, open等）
+    line_style: Optional[str] = None             # 线条样式（solid, dashed等）
+    source_id: Optional[int] = None              # 连接线源元素ID（供VLM/布局修正使用）
+    target_id: Optional[int] = None              # 连接线目标元素ID（供VLM/布局修正使用）
     
     # === 元数据 ===
     source_prompt: Optional[str] = None          # 触发此元素识别的prompt
@@ -143,6 +146,8 @@ class ElementInfo:
             'layer_level': self.layer_level,
             'has_xml': self.has_xml(),
             'source_prompt': self.source_prompt,
+            'source_id': self.source_id,
+            'target_id': self.target_id,
         }
     
     @classmethod
@@ -157,6 +162,8 @@ class ElementInfo:
             polygon=data.get('polygon', []),
             layer_level=data.get('layer_level', LayerLevel.OTHER.value),
             source_prompt=data.get('source_prompt'),
+            source_id=data.get('source_id'),
+            target_id=data.get('target_id'),
         )
 
 

@@ -2,7 +2,7 @@
 # Checkpoint must be sam3.pt (safetensors not used); BPE: bpe_simple_vocab_16e6.txt.gz
 sam3:
   checkpoint_path: "models/sam3_ms/sam3.pt"
-  bpe_path: "models/bpe_simple_vocab_16e6.txt.gz"
+  bpe_path: "models/sam3/bpe_simple_vocab_16e6.txt.gz"
   # device: "cuda" | "cpu" | leave empty for auto (cuda if available)
   # Set "cpu" if GPU does not match current PyTorch
   # device: "cpu"
@@ -10,56 +10,144 @@ sam3:
   epsilon_factor: 0.02
   min_area: 100
 
-# Prompt groups: prompts are also defined in prompts/*.py; here you set thresholds per group.
+# Prompt groups: prompts default to prompts/*.py; prompts below are merged with defaults unless replace_default_prompts is true.
 prompt_groups:
   image:
     name: image
+    replace_default_prompts: false
+    prompts:
+      - standalone icon
+      - line art icon
+      - system icon
+      - agent icon
+      - database icon
+      - warning icon
+      - small chart icon
+      - diagram symbol
     score_threshold: 0.5
     min_area: 100
     priority: 2
   arrow:
     name: arrow
+    replace_default_prompts: false
+    prompts:
+      - straight arrow
+      - arrow with arrowhead
+      - dashed arrow
+      - directed connector
+      - straight connector line
+      - thin connector line
+      - dashed connector line
+      - dotted connector line
+      - line connecting diagram nodes
     score_threshold: 0.45
     min_area: 50
     priority: 4
   shape:
     name: shape
+    replace_default_prompts: false
+    prompts:
+      - rounded rectangle card
+      - rectangular card
+      - outlined card
+      - diagram box
+      - circle node
+      - circular node
+      - ellipse node
+      - database
+      - cylindrical database
+      - database cylinder
+      - diamond shape
+      - triangle shape
+      - hexagon shape
     score_threshold: 0.5
     min_area: 200
     priority: 3
   background:
     name: background
+    replace_default_prompts: false
+    prompts:
+      - outer container panel
+      - section panel
+      - group container
+      - large rounded rectangle panel
+      - background frame
+      - diagram boundary box
     score_threshold: 0.25
     min_area: 500
     priority: 1
 
 # Text OCR engine: tesseract (system) or paddleocr (better mixed CN/EN)
 ocr:
-  engine: "tesseract"   # "tesseract" | "paddleocr"
+  engine: "paddleocr"   # "tesseract" | "paddleocr"
   paddleocr:
     lang: "ch"
-    use_angle_cls: true
+    use_angle_cls: false
     # Set allow_download: false to require local models and fail fast instead of downloading.
     allow_download: false
-    # Local PaddleOCR 2.x model root. Auto-detects *_det_infer, *_rec_infer, *_cls_infer under this directory.
+    # Keep false so a PaddleOCR failure is visible instead of producing Tesseract results labeled as PaddleOCR.
+    allow_fallback_to_tesseract: false
+    # Keep false so PP-OCRv6 config fails fast instead of silently using PaddleOCR 2.x legacy args.
+    allow_legacy_fallback: false
+    # PP-OCRv6 is the default for PaddleOCR >= 3.7.0. Choose tiny/small/medium as needed.
+    ocr_version: "PP-OCRv6"
+    text_detection_model_name: "PP-OCRv6_medium_det"
+    text_recognition_model_name: "PP-OCRv6_medium_rec"
+    # Only used when use_angle_cls is true. Must match textline_orientation_model_dir.
+    textline_orientation_model_name: "PP-LCNet_x1_0_textline_ori"
+    # Match PaddleOCR web demo detector settings for small diagram labels.
+    text_det_limit_side_len: 64
+    text_det_limit_type: "min"
+    text_det_thresh: 0.3
+    text_det_box_thresh: 0.6
+    text_det_unclip_ratio: 1.5
+    text_rec_score_thresh: 0.0
+    # Keep local scaling off by default when detector min-side limit is used; coordinates are still normalized if enabled.
+    scale: 1.0
+    # Drop noisy icon-like false positives with very low recognition confidence.
+    min_confidence: 0.30
+    # Local model root. Auto-detects *_det_infer, *_rec_infer, *_cls_infer under this directory.
     model_dir: "models/paddleocr"
-    # Or set explicit model directories:
-    # det_model_dir: "models/paddleocr/ch_PP-OCRv4_det_infer"
-    # rec_model_dir: "models/paddleocr/ch_PP-OCRv4_rec_infer"
-    # cls_model_dir: "models/paddleocr/ch_ppocr_mobile_v2.0_cls_infer"
+    # Or set explicit PaddleOCR 3.x model directories:
+    # text_detection_model_dir: "models/paddleocr/PP-OCRv6_medium_det"
+    # text_recognition_model_dir: "models/paddleocr/PP-OCRv6_medium_rec"
+    # textline_orientation_model_dir: "models/paddleocr/PP-LCNet_x1_0_textline_ori"
 
 # Multimodal / VLM (optional, for text/OCR)
 multimodal:
+  # Disabled by default to avoid accidental external calls. Enable to run VLM enhancement passes.
+  enabled: false
   mode: "api"
   api_key: "YOUR_API_KEY_HERE"
   base_url: "YOUR_BASE_URL_HERE"
   model: "your-vlm-model-name"
+  # If base_url is already the exact Postman URL, set base_url_is_endpoint: true.
+  base_url_is_endpoint: false
+  endpoint_path: "chat/completions"
+  # Huawei MaaS expects image_url to be a plain base64 string. Use openai_data_url for OpenAI-style {url:data:...}.
+  image_url_format: "raw_base64"
+  image_content_order: "text_first"
+  # Custom VLM service auth headers. Requests include X-HW-ID and X-HW-APPKEY when set.
+  x_hw_id: "YOUR_X_HW_ID_HERE"
+  x_hw_appkey: "YOUR_X_HW_APPKEY_HERE"
   local_base_url: "http://localhost:11434/v1"
   local_api_key: "ollama"
   local_model: "local-model-name"
   force_vlm_ocr: false
   max_tokens: 4000
   timeout: 60
+  verify_ssl: true
+  max_elements_for_vlm: 80
+  use_for:
+    prompt_planning: true   # Add image-specific SAM3 prompts before segmentation
+    element_refine: true    # Correct SAM3 element types/line styles after segmentation
+    region_refine: true     # Structure bad regions before picture fallback refinement
+    layout_refine: true     # Correct connector source/target and dashed styles
+    export_validate: true   # Save a final VLM export quality report before PPTX
+  thresholds:
+    element_refine_confidence: 0.75
+    region_refine_confidence: 0.70
+    layout_refine_confidence: 0.70
   ca_cert_path: false
   proxy: ""
 
