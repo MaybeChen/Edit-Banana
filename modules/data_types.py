@@ -144,6 +144,10 @@ class ElementInfo:
             'layer_level': self.layer_level,
             'has_xml': self.has_xml(),
             'source_prompt': self.source_prompt,
+            'source_id': self.source_id,
+            'target_id': self.target_id,
+            'line_style': self.line_style,
+            'arrow_style': self.arrow_style,
         }
     
     @classmethod
@@ -158,6 +162,10 @@ class ElementInfo:
             polygon=data.get('polygon', []),
             layer_level=data.get('layer_level', LayerLevel.OTHER.value),
             source_prompt=data.get('source_prompt'),
+            source_id=data.get('source_id'),
+            target_id=data.get('target_id'),
+            line_style=data.get('line_style'),
+            arrow_style=data.get('arrow_style'),
         )
 
 
@@ -265,7 +273,7 @@ def get_layer_level(element_type: str) -> int:
     element_type = element_type.lower()
     
     # 背景/容器类（最底层）
-    if element_type in {'section_panel', 'title_bar'}:
+    if element_type in {'section_panel', 'title_bar', 'container'}:
         return LayerLevel.BACKGROUND.value
     
     # 箭头/连接线
