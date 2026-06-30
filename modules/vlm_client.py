@@ -239,6 +239,7 @@ class VLMClient:
                 flush=True,
             )
         response.raise_for_status()
+        result = response.json()
         if self.log_response:
             print(
                 "[VLMClient] response "
@@ -246,13 +247,13 @@ class VLMClient:
                     {
                         "status_code": response.status_code,
                         "url": response.url,
-                        "body": response.text[: self.response_log_chars],
+                        "body_chars": len(response.text),
                     },
                     ensure_ascii=False,
                 ),
                 flush=True,
             )
-        return response.json()
+        return result
 
     def chat(self, messages: List[Dict[str, Any]], **overrides: Any) -> Dict[str, Any]:
         """Backward-compatible alias for request()."""

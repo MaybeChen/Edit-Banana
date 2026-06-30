@@ -104,12 +104,21 @@ class VLMEnhancer:
         """Parse VLM JSON and log non-structured responses for prompt tuning."""
         parsed = cls._parse_json_response(response)
         if parsed:
+            cls._print_json(f"{stage} parsed", parsed)
             return parsed
         text = cls._extract_response_text(response).strip()
         if text:
             preview = text[:1000] + ("...<truncated>" if len(text) > 1000 else "")
             print(f"[VLMEnhancer] {stage} returned non-JSON response: {preview}", flush=True)
         return {}
+
+    @staticmethod
+    def _print_json(label: str, data: Any, max_chars: int = 4000) -> None:
+        """Print bounded structured VLM data, not raw provider responses."""
+        text = json.dumps(data, ensure_ascii=False)
+        if len(text) > max_chars:
+            text = text[:max_chars] + "...<truncated>"
+        print(f"[VLMEnhancer] {label}: {text}", flush=True)
 
     @staticmethod
     def _json_only_instruction(schema: str) -> str:
@@ -192,6 +201,8 @@ class VLMEnhancer:
             values = data.get(key, [])
             if isinstance(values, list):
                 planned[key] = [str(v).strip() for v in values if str(v).strip()]
+        if planned:
+            self._print_json("prompt_planning additions", planned)
         return planned
 
     def apply_prompt_plan(self, extractor: Any, image_path: str, output_dir: str = "") -> Dict[str, List[str]]:
@@ -208,6 +219,10 @@ class VLMEnhancer:
             group = mapping.get(key)
             if group and prompts:
                 extractor.add_prompts_to_group(group, prompts)
+        self._print_json(
+            "prompt_planning applied",
+            {key: len(prompts) for key, prompts in planned.items() if prompts},
+        )
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
             with open(os.path.join(output_dir, "vlm_prompts.json"), "w", encoding="utf-8") as f:
@@ -237,6 +252,7 @@ class VLMEnhancer:
         updates = data.get("elements", []) if isinstance(data.get("elements"), list) else []
         by_id = {elem.id: elem for elem in context.elements}
         applied = []
+        changes = []
         for item in updates:
             if not isinstance(item, dict) or self._confidence(item) < threshold:
                 continue
@@ -245,6 +261,7 @@ class VLMEnhancer:
             if not elem or not new_type:
                 continue
             old_type = elem.element_type
+            old_line_style = elem.line_style
             if new_type:
                 elem.element_type = new_type
             line_style = item.get("line_style")
@@ -252,7 +269,17 @@ class VLMEnhancer:
                 elem.line_style = line_style
             elem.processing_notes.append(f"vlm_element_refine: {old_type}->{elem.element_type}")
             applied.append(item)
-        result = {"updated": len(applied), "items": applied}
+            if old_type != elem.element_type or old_line_style != elem.line_style:
+                changes.append(
+                    {
+                        "id": elem.id,
+                        "type": {"from": old_type, "to": elem.element_type},
+                        "line_style": {"from": old_line_style, "to": elem.line_style},
+                        "confidence": self._confidence(item),
+                    }
+                )
+        result = {"updated": len(changes), "items": applied, "changes": changes}
+        self._print_json("element_refine applied", changes)
         self._write_artifact(context, "vlm_element_refine.json", result)
         return result
 
@@ -300,6 +327,7 @@ class VLMEnhancer:
             new_elements.append(elem)
         context.elements.extend(new_elements)
         result = {"added": len(new_elements), "items": [e.to_dict() for e in new_elements]}
+        self._print_json("region_refine added", result["items"])
         self._write_artifact(context, "vlm_region_refine.json", result)
         return result
 
@@ -324,12 +352,19 @@ class VLMEnhancer:
         edges = data.get("edges", []) if isinstance(data.get("edges"), list) else []
         by_id = {elem.id: elem for elem in context.elements}
         applied = []
+        changes = []
         for edge in edges:
             if not isinstance(edge, dict) or self._confidence(edge) < threshold:
                 continue
             elem = by_id.get(edge.get("id"))
             if not elem:
                 continue
+            before = {
+                "type": elem.element_type,
+                "line_style": elem.line_style,
+                "source_id": elem.source_id,
+                "target_id": elem.target_id,
+            }
             edge_type = self._sanitize_type(edge.get("type"))
             if edge_type in {"arrow", "connector", "line"}:
                 elem.element_type = edge_type
@@ -341,7 +376,16 @@ class VLMEnhancer:
                 elem.target_id = int(edge.get("target_id"))
             elem.processing_notes.append("vlm_layout_refine")
             applied.append(edge)
-        result = {"updated": len(applied), "edges": applied}
+            after = {
+                "type": elem.element_type,
+                "line_style": elem.line_style,
+                "source_id": elem.source_id,
+                "target_id": elem.target_id,
+            }
+            if before != after:
+                changes.append({"id": elem.id, "from": before, "to": after, "confidence": self._confidence(edge)})
+        result = {"updated": len(changes), "edges": applied, "changes": changes}
+        self._print_json("layout_refine applied", changes)
         self._write_artifact(context, "vlm_layout_refine.json", result)
         return result
 
@@ -363,5 +407,6 @@ class VLMEnhancer:
             print(f"[VLMEnhancer] export validation skipped: {exc}", flush=True)
             return {"checked": False, "error": str(exc)}
         result = {"checked": True, "report": data}
+        self._print_json("export_validate report", data)
         self._write_artifact(context, "vlm_export_validation.json", result)
         return result
