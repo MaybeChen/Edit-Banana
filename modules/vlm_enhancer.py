@@ -99,6 +99,28 @@ class VLMEnhancer:
                     return {}
         return {}
 
+    @classmethod
+    def _parse_json_response_with_debug(cls, response: Any, stage: str) -> Dict[str, Any]:
+        """Parse VLM JSON and log non-structured responses for prompt tuning."""
+        parsed = cls._parse_json_response(response)
+        if parsed:
+            return parsed
+        text = cls._extract_response_text(response).strip()
+        if text:
+            preview = text[:1000] + ("...<truncated>" if len(text) > 1000 else "")
+            print(f"[VLMEnhancer] {stage} returned non-JSON response: {preview}", flush=True)
+        return {}
+
+    @staticmethod
+    def _json_only_instruction(schema: str) -> str:
+        """Return strict output instructions shared by VLM enhancement prompts."""
+        return (
+            "输出必须是一个可被 json.loads 直接解析的 JSON 对象。"
+            "不要输出 Markdown 代码块，不要输出解释、分析、口语化描述或额外文本。"
+            "如果没有可修改内容，也必须返回符合 schema 的空数组/空报告。"
+            f"JSON schema 示例：{schema}"
+        )
+
     @staticmethod
     def _element_summary(elem: ElementInfo) -> Dict[str, Any]:
         return {
@@ -153,12 +175,15 @@ class VLMEnhancer:
         if not self._enabled_for("prompt_planning"):
             return {}
         prompt = (
-            "你是图表元素识别提示词规划器。请观察图片，返回 JSON，键只能是 "
-            "image、shape、arrow、background，每个值是适合 SAM3 分割的英文 prompt 数组。"
-            "只返回 JSON，不要解释。重点包含图标、卡片、圆柱数据库、虚线/实线连接器、容器面板。"
+            "你是图表元素识别提示词规划器。请观察图片，为 SAM3 分割补充英文 prompt。"
+            + self._json_only_instruction(
+                '{"image":["icon"],"shape":["rounded rectangle"],"arrow":["dashed connector line"],"background":["outer panel"]}'
+            )
+            + "键只能是 image、shape、arrow、background；每个值必须是英文 prompt 字符串数组。"
+            "重点包含图标、卡片、圆柱数据库、虚线/实线连接器、容器面板。"
         )
         try:
-            data = self._parse_json_response(self.client.analyze_image(image_path, prompt))
+            data = self._parse_json_response_with_debug(self.client.analyze_image(image_path, prompt), "prompt_planning")
         except Exception as exc:
             print(f"[VLMEnhancer] prompt planning skipped: {exc}", flush=True)
             return {}
@@ -195,14 +220,17 @@ class VLMEnhancer:
             return {"updated": 0, "items": []}
         threshold = float(self.thresholds.get("element_refine_confidence", 0.75))
         prompt = (
-            "你是图表元素类型校正器。根据图片和候选元素列表，修正明显错误的类型。"
-            "只返回 JSON：{\"elements\":[{\"id\":数字,\"type\":标准类型,"
-            "\"line_style\":\"solid|dashed|null\",\"confidence\":0到1}]}。"
-            "标准类型只能选 icon,picture,rectangle,rounded rectangle,circle,ellipse,cylinder,diamond,triangle,hexagon,container,arrow,connector,line。"
+            "你是图表元素类型校正器。根据图片和候选元素列表，输出可直接覆盖原识别结果的结构化增量。"
+            + self._json_only_instruction(
+                '{"elements":[{"id":1,"type":"connector","line_style":"dashed","confidence":0.92}]}'
+            )
+            + "只返回需要修改的元素；不确定就不要返回该元素。"
+            "type 只能选 icon,picture,rectangle,rounded rectangle,circle,ellipse,cylinder,diamond,triangle,hexagon,container,arrow,connector,line。"
+            "line_style 只能是 solid、dashed 或 null。"
             f"候选元素：{json.dumps(self._summarize_elements(context.elements), ensure_ascii=False)}"
         )
         try:
-            data = self._parse_json_response(self.client.analyze_image(context.image_path, prompt))
+            data = self._parse_json_response_with_debug(self.client.analyze_image(context.image_path, prompt), "element_refine")
         except Exception as exc:
             print(f"[VLMEnhancer] element refine skipped: {exc}", flush=True)
             return {"updated": 0, "items": []}
@@ -237,14 +265,15 @@ class VLMEnhancer:
             return {"added": 0, "items": []}
         threshold = float(self.thresholds.get("region_refine_confidence", 0.70))
         prompt = (
-            "你是图表漏检区域结构化识别器。根据图片和 bad_regions，补充漏检元素。"
-            "只返回 JSON：{\"elements\":[{\"type\":标准类型,\"bbox\":[x1,y1,x2,y2],"
-            "\"line_style\":\"solid|dashed|null\",\"confidence\":0到1}]}。"
-            "如果不确定，不要返回该元素。bad_regions="
+            "你是图表漏检区域结构化识别器。根据图片和 bad_regions，补充可落地到原识别结果的元素。"
+            + self._json_only_instruction(
+                '{"elements":[{"type":"rectangle","bbox":[10,20,100,120],"line_style":"solid","confidence":0.86}]}'
+            )
+            + "bbox 必须是原图像素坐标 [x1,y1,x2,y2]；如果不确定，不要返回该元素。bad_regions="
             + json.dumps(regions[:20], ensure_ascii=False)
         )
         try:
-            data = self._parse_json_response(self.client.analyze_image(context.image_path, prompt))
+            data = self._parse_json_response_with_debug(self.client.analyze_image(context.image_path, prompt), "region_refine")
         except Exception as exc:
             print(f"[VLMEnhancer] region refine skipped: {exc}", flush=True)
             return {"added": 0, "items": []}
@@ -280,13 +309,15 @@ class VLMEnhancer:
             return {"updated": 0, "edges": []}
         threshold = float(self.thresholds.get("layout_refine_confidence", 0.70))
         prompt = (
-            "你是图表连接关系分析器。根据图片和元素列表修正箭头/连接线。"
-            "只返回 JSON：{\"edges\":[{\"id\":连接线元素id,\"source_id\":源元素id|null,"
-            "\"target_id\":目标元素id|null,\"line_style\":\"solid|dashed\",\"type\":\"arrow|connector|line\",\"confidence\":0到1}]}。"
+            "你是图表连接关系分析器。根据图片和元素列表，输出可直接更新原连接线元素的结构化增量。"
+            + self._json_only_instruction(
+                '{"edges":[{"id":3,"source_id":10,"target_id":11,"line_style":"dashed","type":"connector","confidence":0.9}]}'
+            )
+            + "只返回需要修改的连接线；source_id/target_id 必须来自元素列表，无法判断则为 null。"
             f"元素列表：{json.dumps(self._summarize_elements(context.elements), ensure_ascii=False)}"
         )
         try:
-            data = self._parse_json_response(self.client.analyze_image(context.image_path, prompt))
+            data = self._parse_json_response_with_debug(self.client.analyze_image(context.image_path, prompt), "layout_refine")
         except Exception as exc:
             print(f"[VLMEnhancer] layout refine skipped: {exc}", flush=True)
             return {"updated": 0, "edges": []}
@@ -319,13 +350,15 @@ class VLMEnhancer:
         if not self._enabled_for("export_validate") or not output_path:
             return {"checked": False}
         prompt = (
-            "你是图表导出质量审查器。根据原图、元素摘要和 draw.io 输出路径信息，"
-            "检查是否存在元素遗漏、类型错误、虚线/箭头错误或布局问题。"
-            "只返回 JSON：{\"issues\":[{\"severity\":\"low|medium|high\",\"description\":\"...\"}],\"pass\":true|false}。"
+            "你是图表导出质量审查器。根据原图、元素摘要和 draw.io 输出路径信息，结构化列出质量问题。"
+            + self._json_only_instruction(
+                '{"issues":[{"severity":"medium","description":"missing dashed connector","element_id":3}],"pass":false}'
+            )
+            + "issues 中 description 要简短明确；没有问题返回 {\"issues\":[],\"pass\":true}。"
             f"drawio_output={output_path}; elements={json.dumps(self._summarize_elements(context.elements), ensure_ascii=False)}"
         )
         try:
-            data = self._parse_json_response(self.client.analyze_image(context.image_path, prompt))
+            data = self._parse_json_response_with_debug(self.client.analyze_image(context.image_path, prompt), "export_validate")
         except Exception as exc:
             print(f"[VLMEnhancer] export validation skipped: {exc}", flush=True)
             return {"checked": False, "error": str(exc)}
