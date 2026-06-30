@@ -9,6 +9,10 @@ sam3:
   score_threshold: 0.5
   epsilon_factor: 0.02
   min_area: 100
+  # When enabled, ask the configured VLM to generate image-specific SAM3 prompts
+  # and merge them with the default prompt groups before extraction.
+  use_vlm_prompts: false
+  vlm_prompt_max_per_group: 8
 
 # Prompt groups: prompts default to prompts/*.py; prompts below are merged with defaults unless replace_default_prompts is true.
 prompt_groups:
