@@ -1214,7 +1214,7 @@ class Sam3InfoExtractor(BaseProcessor):
             x1, y1, x2, y2 = elem.bbox.to_list()
             cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
             
-            label = f"{elem.element_type}"
+            label = f"{elem.id}:{elem.element_type}"
             cv2.putText(image, label, (x1, y1-5), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
         

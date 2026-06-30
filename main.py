@@ -567,7 +567,7 @@ class Pipeline:
     def _generate_edge_xml(self, elem, context: ProcessingContext = None) -> str:
         """Generate an editable draw.io edge for arrows/lines/connectors."""
         elem_type = elem.element_type.lower()
-        start, end = self._infer_edge_points(elem)
+        start, end = self._infer_edge_points(elem, context.elements if context else None)
         arrow_heads = elem.arrow_heads or ("end" if elem_type == "arrow" else "none")
         start_arrow = "classic" if arrow_heads in {"start", "both"} else "none"
         end_arrow = "classic" if arrow_heads in {"end", "both"} else "none"
@@ -640,8 +640,21 @@ class Pipeline:
         except Exception:
             return False
 
-    def _infer_edge_points(self, elem) -> tuple:
-        """Infer connector endpoints from SAM3 bbox/polygon, preserving arrow direction where possible."""
+    def _infer_edge_points(self, elem, elements=None) -> tuple:
+        """Infer connector endpoints, preferring VLM source/target direction when available.
+
+        SAM3 masks can flip arrow start/end when the arrowhead polygon is noisy.
+        When VLM supplies source_id/target_id, use those element boxes as the
+        directional truth: sourcePoint is placed on the source element boundary,
+        targetPoint is placed on the target element boundary. Geometry fallback is
+        still used when VLM relationship data is absent or incomplete.
+        """
+        if elements and elem.source_id is not None and elem.target_id is not None:
+            source = self._find_element_by_id(elements, elem.source_id)
+            target = self._find_element_by_id(elements, elem.target_id)
+            if source is not None and target is not None:
+                return self._bbox_connection_points(source.bbox, target.bbox)
+
         bbox = elem.bbox
         cx = (bbox.x1 + bbox.x2) / 2
         cy = (bbox.y1 + bbox.y2) / 2
@@ -661,6 +674,38 @@ class Pipeline:
         tip = self._find_sharpest_polygon_point(points)
         start = max(points, key=lambda p: (p[0] - tip[0]) ** 2 + (p[1] - tip[1]) ** 2)
         return start, tip
+
+    @staticmethod
+    def _find_element_by_id(elements, element_id):
+        for candidate in elements or []:
+            if candidate.id == element_id:
+                return candidate
+        return None
+
+    @staticmethod
+    def _bbox_connection_points(source_bbox, target_bbox) -> tuple:
+        """Return boundary points from source bbox toward target bbox and vice versa."""
+        sx, sy = source_bbox.center
+        tx, ty = target_bbox.center
+
+        def anchor(box, other_center):
+            cx, cy = box.center
+            ox, oy = other_center
+            dx = ox - cx
+            dy = oy - cy
+            half_w = max(1.0, box.width / 2)
+            half_h = max(1.0, box.height / 2)
+            if abs(dx) / half_w >= abs(dy) / half_h:
+                x = box.x2 if dx >= 0 else box.x1
+                y = cy + dy * (half_w / max(abs(dx), 1.0))
+                y = max(box.y1, min(box.y2, y))
+            else:
+                y = box.y2 if dy >= 0 else box.y1
+                x = cx + dx * (half_h / max(abs(dy), 1.0))
+                x = max(box.x1, min(box.x2, x))
+            return (float(x), float(y))
+
+        return anchor(source_bbox, (tx, ty)), anchor(target_bbox, (sx, sy))
 
     def _find_sharpest_polygon_point(self, points):
         """Find the most likely arrow head tip as the sharpest polygon vertex."""
