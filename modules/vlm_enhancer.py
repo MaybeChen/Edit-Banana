@@ -107,9 +107,44 @@ class VLMEnhancer:
             cls._print_json(f"{stage} parsed", parsed)
             return parsed
         text = cls._extract_response_text(response).strip()
+        coerced = cls._parse_and_coerce_stage_json(text, stage)
+        if coerced:
+            cls._print_json(f"{stage} parsed", coerced)
+            return coerced
         if text:
             preview = text[:1000] + ("...<truncated>" if len(text) > 1000 else "")
             print(f"[VLMEnhancer] {stage} returned non-JSON response: {preview}", flush=True)
+        return {}
+
+    @classmethod
+    def _parse_and_coerce_stage_json(cls, text: str, stage: str) -> Dict[str, Any]:
+        """Parse JSON that is valid but not wrapped in the expected top-level object."""
+        if not text:
+            return {}
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"(\{.*\}|\[.*\])", text, flags=re.DOTALL)
+            if not match:
+                return {}
+            try:
+                parsed = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                return {}
+        if isinstance(parsed, dict):
+            return parsed
+        if not isinstance(parsed, list):
+            return {}
+        if stage in {"element_refine", "region_refine"}:
+            return {"elements": parsed}
+        if stage == "layout_refine":
+            return {"edges": parsed}
+        if stage == "export_validate":
+            return {"issues": parsed, "pass": False}
         return {}
 
     @staticmethod
