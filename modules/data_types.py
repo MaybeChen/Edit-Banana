@@ -123,6 +123,12 @@ class ElementInfo:
     arrow_end: Optional[tuple] = None            # 箭头终点
     vector_points: Optional[List[List[int]]] = None  # 矢量箭头路径点 [[x,y], [x,y], ...]
     arrow_style: Optional[str] = None            # 箭头样式（classic, open等）
+    arrow_heads: Optional[str] = None            # 箭头头部（none/start/end/both，供VLM属性补全使用）
+    line_style: Optional[str] = None             # 线条样式（solid, dashed/dotted等）
+    dash_pattern: Optional[str] = None           # 虚线模式（如 "3 3"，供导出使用）
+    corner_radius: Optional[float] = None        # 圆角半径/比例（供VLM/CV属性补全使用）
+    source_id: Optional[int] = None              # 连接线源元素ID（供VLM/布局修正使用）
+    target_id: Optional[int] = None              # 连接线目标元素ID（供VLM/布局修正使用）
     
     # === 元数据 ===
     source_prompt: Optional[str] = None          # 触发此元素识别的prompt
@@ -143,6 +149,18 @@ class ElementInfo:
             'layer_level': self.layer_level,
             'has_xml': self.has_xml(),
             'source_prompt': self.source_prompt,
+            'arrow_start': list(self.arrow_start) if self.arrow_start is not None else None,
+            'arrow_end': list(self.arrow_end) if self.arrow_end is not None else None,
+            'arrow_style': self.arrow_style,
+            'arrow_heads': self.arrow_heads,
+            'line_style': self.line_style,
+            'dash_pattern': self.dash_pattern,
+            'corner_radius': self.corner_radius,
+            'fill_color': self.fill_color,
+            'stroke_color': self.stroke_color,
+            'stroke_width': self.stroke_width,
+            'source_id': self.source_id,
+            'target_id': self.target_id,
         }
     
     @classmethod
@@ -157,6 +175,18 @@ class ElementInfo:
             polygon=data.get('polygon', []),
             layer_level=data.get('layer_level', LayerLevel.OTHER.value),
             source_prompt=data.get('source_prompt'),
+            arrow_start=tuple(data['arrow_start']) if data.get('arrow_start') is not None else None,
+            arrow_end=tuple(data['arrow_end']) if data.get('arrow_end') is not None else None,
+            arrow_style=data.get('arrow_style'),
+            arrow_heads=data.get('arrow_heads'),
+            line_style=data.get('line_style'),
+            dash_pattern=data.get('dash_pattern'),
+            corner_radius=data.get('corner_radius'),
+            fill_color=data.get('fill_color'),
+            stroke_color=data.get('stroke_color'),
+            stroke_width=data.get('stroke_width', 1),
+            source_id=data.get('source_id'),
+            target_id=data.get('target_id'),
         )
 
 
