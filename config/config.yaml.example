@@ -141,6 +141,8 @@ multimodal:
   max_tokens: 4000
   timeout: 60
   verify_ssl: true
+  log_response: true
+  response_log_chars: 4000
   max_elements_for_vlm: 80
   use_for:
     prompt_planning: true   # Add image-specific SAM3 prompts before segmentation

@@ -53,6 +53,8 @@ class VLMClient:
         self.verify_ssl = self.config.get("verify_ssl", True)
         self.ca_cert_path = self.config.get("ca_cert_path")
         self.proxy = self.config.get("proxy") or ""
+        self.log_response = bool(self.config.get("log_response", True))
+        self.response_log_chars = int(self.config.get("response_log_chars", 4000) or 4000)
 
     def _request_url(self) -> str:
         """Resolve the request URL from configured base_url.
@@ -237,6 +239,19 @@ class VLMClient:
                 flush=True,
             )
         response.raise_for_status()
+        if self.log_response:
+            print(
+                "[VLMClient] response "
+                + json.dumps(
+                    {
+                        "status_code": response.status_code,
+                        "url": response.url,
+                        "body": response.text[: self.response_log_chars],
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
         return response.json()
 
     def chat(self, messages: List[Dict[str, Any]], **overrides: Any) -> Dict[str, Any]:
