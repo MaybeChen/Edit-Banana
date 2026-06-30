@@ -46,15 +46,29 @@ class VLMClient:
         self.x_hw_appkey = self.config.get("x_hw_appkey") or ""
         self.timeout = int(self.config.get("timeout", 60) or 60)
         self.max_tokens = int(self.config.get("max_tokens", 4000) or 4000)
+        self.endpoint_path = self.config.get("endpoint_path", "chat/completions")
+        self.base_url_is_endpoint = bool(self.config.get("base_url_is_endpoint", False))
 
     def _request_url(self) -> str:
-        """Resolve the request URL from configured base_url."""
-        base_url = (self.base_url or "").rstrip("/")
+        """Resolve the request URL from configured base_url.
+
+        Set multimodal.base_url_is_endpoint=true to use base_url exactly as
+        configured (matching a known-good Postman URL, including any trailing
+        slash). Otherwise endpoint_path is appended unless base_url already
+        points to a chat-completions endpoint.
+        """
+        raw_base_url = self.base_url or ""
+        base_url = raw_base_url.rstrip("/")
         if not base_url or base_url in _PLACEHOLDER_VALUES:
             raise ValueError("multimodal.base_url is not configured")
+        if self.base_url_is_endpoint:
+            return raw_base_url
         if base_url.endswith("/chat/completions") or base_url.endswith("/v1/chat/completions"):
-            return base_url
-        return f"{base_url}/chat/completions"
+            return raw_base_url
+        endpoint_path = str(self.endpoint_path or "").strip("/")
+        if not endpoint_path:
+            return raw_base_url
+        return f"{base_url}/{endpoint_path}"
 
     @staticmethod
     def _mask_secret(value: str) -> str:
@@ -163,6 +177,19 @@ class VLMClient:
             headers=headers,
             timeout=self.timeout,
         )
+        if response.status_code >= 400:
+            print(
+                "[VLMClient] error "
+                + json.dumps(
+                    {
+                        "status_code": response.status_code,
+                        "url": response.url,
+                        "body": response.text[:2000],
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
         response.raise_for_status()
         return response.json()
 
@@ -172,12 +199,14 @@ class VLMClient:
 
     def analyze_image(self, image_path: str, prompt: str, **overrides: Any) -> Dict[str, Any]:
         """Send a single image plus text prompt to the VLM service."""
+        # Huawei MaaS/OpenAI-compatible vision examples place image_url before
+        # text; keep that order for stricter gateways.
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {"url": self._image_to_data_url(image_path)}},
+                    {"type": "text", "text": prompt},
                 ],
             }
         ]

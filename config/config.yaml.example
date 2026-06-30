@@ -125,6 +125,9 @@ multimodal:
   api_key: "YOUR_API_KEY_HERE"
   base_url: "YOUR_BASE_URL_HERE"
   model: "your-vlm-model-name"
+  # If base_url is already the exact Postman URL, set base_url_is_endpoint: true.
+  base_url_is_endpoint: false
+  endpoint_path: "chat/completions"
   # Custom VLM service auth headers. Requests include X-HW-ID and X-HW-APPKEY when set.
   x_hw_id: "YOUR_X_HW_ID_HERE"
   x_hw_appkey: "YOUR_X_HW_APPKEY_HERE"
