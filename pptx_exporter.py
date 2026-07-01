@@ -65,7 +65,7 @@ def export_elements_to_pptx(
             _add_shape_from_element(slide, elem, MSO_AUTO_SHAPE_TYPE, Emu, Pt, RGBColor)
 
     for block in text_blocks or []:
-        _add_text_block(slide, block, Emu, Pt, RGBColor, MSO_VERTICAL_ANCHOR, PP_ALIGN)
+        _add_text_block(slide, block, canvas_width, canvas_height, Emu, Pt, RGBColor, MSO_VERTICAL_ANCHOR, PP_ALIGN)
 
     output_path = Path(pptx_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,12 +193,21 @@ def _connector_points(elem: Any) -> Tuple[Optional[Tuple[float, float]], Optiona
     return (float(cx), float(getattr(bbox, "y1", 0))), (float(cx), float(getattr(bbox, "y2", 0)))
 
 
-def _add_text_block(slide, block: Dict[str, Any], Emu, Pt, RGBColor, MSO_VERTICAL_ANCHOR, PP_ALIGN) -> None:
+def _add_text_block(
+    slide,
+    block: Dict[str, Any],
+    canvas_width: int,
+    canvas_height: int,
+    Emu,
+    Pt,
+    RGBColor,
+    MSO_VERTICAL_ANCHOR,
+    PP_ALIGN,
+) -> None:
     geo = block.get("geometry") or {}
-    x = float(geo.get("x", 0))
-    y = float(geo.get("y", 0))
-    width = max(float(geo.get("width", 20)), 20.0)
-    height = max(float(geo.get("height", 10)), 10.0)
+    text = str(block.get("text", ""))
+    font_size = float(block.get("font_size", 12) or 12)
+    x, y, width, height = _text_box_geometry(geo, text, font_size, canvas_width, canvas_height)
     textbox = slide.shapes.add_textbox(_emu(x, Emu), _emu(y, Emu), _emu(width, Emu), _emu(height, Emu))
     frame = textbox.text_frame
     frame.clear()
@@ -211,8 +220,8 @@ def _add_text_block(slide, block: Dict[str, Any], Emu, Pt, RGBColor, MSO_VERTICA
     paragraph = frame.paragraphs[0]
     paragraph.alignment = PP_ALIGN.CENTER
     run = paragraph.add_run()
-    run.text = str(block.get("text", ""))
-    run.font.size = Pt(float(block.get("font_size", 12) or 12))
+    run.text = text
+    run.font.size = Pt(font_size)
     run.font.bold = bool(block.get("is_bold") or str(block.get("font_weight", "")).lower() == "bold")
     run.font.italic = bool(block.get("is_italic") or str(block.get("font_style", "")).lower() == "italic")
     font_color = _rgb(block.get("font_color") or "#000000", RGBColor)
@@ -220,6 +229,84 @@ def _add_text_block(slide, block: Dict[str, Any], Emu, Pt, RGBColor, MSO_VERTICA
         run.font.color.rgb = font_color
     if block.get("font_family"):
         run.font.name = str(block["font_family"])
+
+
+def _text_box_geometry(
+    geo: Dict[str, Any],
+    text: str,
+    font_size: float,
+    canvas_width: int,
+    canvas_height: int,
+) -> Tuple[float, float, float, float]:
+    """Expand likely single-line OCR boxes so PPTX font rendering does not wrap."""
+    x = float(geo.get("x", 0))
+    y = float(geo.get("y", 0))
+    width = max(float(geo.get("width", 20)), 20.0)
+    height = max(float(geo.get("height", 10)), 10.0)
+    slide_w = float(canvas_width or 1280)
+    slide_h = float(canvas_height or 720)
+
+    if not _is_likely_single_line_text(text, width, height, font_size):
+        return _clamp_text_box(x, y, width, height, slide_w, slide_h)
+
+    estimated_width = _estimate_single_line_text_width(text, font_size)
+    target_width = max(width * 1.18, estimated_width, width + font_size * 1.6)
+    target_height = max(height * 1.12, font_size * 1.45)
+
+    x -= (target_width - width) / 2
+    y -= (target_height - height) / 2
+    return _clamp_text_box(x, y, target_width, target_height, slide_w, slide_h)
+
+
+def _is_likely_single_line_text(text: str, width: float, height: float, font_size: float) -> bool:
+    content = text.strip()
+    if not content or "\n" in content or "\r" in content:
+        return False
+    if len(content) > 80:
+        return False
+    return height <= max(font_size * 2.4, 34.0) or width >= _estimate_single_line_text_width(content, font_size) * 0.65
+
+
+def _estimate_single_line_text_width(text: str, font_size: float) -> float:
+    width = 0.0
+    for char in text:
+        width += font_size * _char_width_factor(char)
+    return width + font_size * 1.4
+
+
+def _char_width_factor(char: str) -> float:
+    codepoint = ord(char)
+    if char.isspace():
+        return 0.35
+    if char.isascii():
+        if char.isdigit():
+            return 0.58
+        if char.isalpha():
+            return 0.62
+        return 0.48
+    if (
+        0x4E00 <= codepoint <= 0x9FFF
+        or 0x3400 <= codepoint <= 0x4DBF
+        or 0x3040 <= codepoint <= 0x30FF
+        or 0xAC00 <= codepoint <= 0xD7AF
+    ):
+        return 1.05
+    return 0.8
+
+
+def _clamp_text_box(
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    slide_w: float,
+    slide_h: float,
+) -> Tuple[float, float, float, float]:
+    width = min(max(width, 20.0), max(20.0, slide_w))
+    height = min(max(height, 10.0), max(10.0, slide_h))
+    x = min(max(x, 0.0), max(0.0, slide_w - width))
+    y = min(max(y, 0.0), max(0.0, slide_h - height))
+    return x, y, width, height
 
 
 def _apply_connector_dash(connector, OxmlElement) -> None:
