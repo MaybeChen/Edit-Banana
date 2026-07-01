@@ -218,7 +218,7 @@ def _add_text_block(
     frame.vertical_anchor = MSO_VERTICAL_ANCHOR.MIDDLE
     frame.word_wrap = True
     paragraph = frame.paragraphs[0]
-    paragraph.alignment = PP_ALIGN.CENTER
+    paragraph.alignment = _paragraph_alignment(block.get("text_align"), PP_ALIGN)
     run = paragraph.add_run()
     run.text = text
     run.font.size = Pt(font_size)
@@ -229,6 +229,17 @@ def _add_text_block(
         run.font.color.rgb = font_color
     if block.get("font_family"):
         run.font.name = str(block["font_family"])
+
+
+def _paragraph_alignment(value: Any, PP_ALIGN):
+    normalized = str(value or "").strip().lower()
+    if normalized in {"left", "start"}:
+        return PP_ALIGN.LEFT
+    if normalized in {"right", "end"}:
+        return PP_ALIGN.RIGHT
+    if normalized in {"justify", "justified"}:
+        return PP_ALIGN.JUSTIFY
+    return PP_ALIGN.CENTER
 
 
 def _text_box_geometry(
