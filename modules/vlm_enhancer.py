@@ -122,8 +122,7 @@ class VLMEnhancer:
             cls._print_json(f"{stage} parsed", coerced)
             return coerced
         if text:
-            preview = text[:1000] + ("...<truncated>" if len(text) > 1000 else "")
-            print(f"[VLMEnhancer] {stage} returned non-JSON response: {preview}", flush=True)
+            print(f"[VLMEnhancer] {stage} returned non-JSON response: {text}", flush=True)
         return {}
 
     @classmethod
@@ -160,11 +159,9 @@ class VLMEnhancer:
         return {}
 
     @staticmethod
-    def _print_json(label: str, data: Any, max_chars: int = 4000) -> None:
-        """Print bounded structured VLM data, not raw provider responses."""
+    def _print_json(label: str, data: Any) -> None:
+        """Print full structured VLM data; image/base64 content is omitted upstream."""
         text = json.dumps(data, ensure_ascii=False)
-        if len(text) > max_chars:
-            text = text[:max_chars] + "...<truncated>"
         print(f"[VLMEnhancer] {label}: {text}", flush=True)
 
     @staticmethod
