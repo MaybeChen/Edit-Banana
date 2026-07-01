@@ -103,7 +103,7 @@ def load_config() -> dict:
                 'timeout': 60,
                 'enabled': False,
                 'use_for': {
-                    'prompt_planning': False,
+                    'prompt_planning': True,
                     'text_style': True,
                     'segmentation_refine': True,
                     'element_refine': False,
@@ -117,7 +117,7 @@ def load_config() -> dict:
                     'region_refine_confidence': 0.70,
                     'layout_refine_confidence': 0.70,
                     'text_style_confidence': 0.65,
-                    'segmentation_refine_confidence': 0.70,
+                    'segmentation_refine_confidence': 0.65,
                     'element_attribute_confidence': 0.65,
                 },
             },
