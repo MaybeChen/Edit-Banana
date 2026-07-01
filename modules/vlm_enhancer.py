@@ -422,6 +422,7 @@ class VLMEnhancer:
                 score=self._confidence(item),
                 source_prompt="vlm_structure",
             )
+            setattr(elem, "vlm_item", item)
             self._apply_vlm_structure_attributes(elem, item, context.canvas_width, context.canvas_height)
             elem.processing_notes.append("vlm_structure")
             elements.append(elem)
@@ -490,10 +491,8 @@ class VLMEnhancer:
             return "picture"
         if normalized in {"table", "diagram", "decoration", "group"}:
             return "container" if normalized in {"table", "diagram", "group"} else "rectangle"
-        # Text is handled by OCR text_blocks in this pipeline to avoid duplicate
-        # text rendering from the VLM structure pass.
         if normalized == "text":
-            return None
+            return "text"
         return None
 
     @staticmethod
@@ -576,6 +575,28 @@ class VLMEnhancer:
         canvas_height: int = 1000,
     ) -> None:
         style = item.get("style") if isinstance(item.get("style"), dict) else {}
+        text_style_keys = {
+            "content",
+            "text",
+            "label",
+            "value",
+            "font_family",
+            "font_size",
+            "font_size_estimate",
+            "font_weight",
+            "font_style",
+            "font_color",
+            "text_align",
+            "vertical_align",
+        }
+        if str(elem.element_type or "").lower() == "text":
+            flattened = dict(getattr(elem, "vlm_item", {}) or item)
+            for key in text_style_keys:
+                if key not in flattened and key in item:
+                    flattened[key] = item.get(key)
+                if key not in flattened and key in style:
+                    flattened[key] = style.get(key)
+            setattr(elem, "vlm_item", flattened)
         stroke_value = item.get("stroke_color") or item.get("stroke") or style.get("stroke_color") or style.get("stroke")
         stroke_style = stroke_value if isinstance(stroke_value, dict) else {}
         line_style = self._normalize_line_style(
