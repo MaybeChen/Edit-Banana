@@ -151,9 +151,8 @@ class VLMClient:
             if isinstance(parsed, dict):
                 summary["pptx"] = self._pptx_fields_for_log(parsed)
             else:
-                preview_chars = self.response_log_chars if self.response_log_chars > 0 else 800
-                summary["content_preview"] = content[:preview_chars]
-                summary["content_truncated"] = len(content) > preview_chars
+                summary["parse_error"] = True
+                summary["content_chars"] = len(content)
         return summary
 
     @staticmethod
@@ -194,7 +193,31 @@ class VLMClient:
         try:
             return json.loads(text)
         except Exception:
-            return None
+            repaired = VLMClient._repair_dirty_json_text(text)
+            if repaired == text:
+                return None
+            try:
+                return json.loads(repaired)
+            except Exception:
+                return None
+
+    @staticmethod
+    def _repair_dirty_json_text(text: str) -> str:
+        import re
+
+        repaired = str(text or "")
+        repaired = re.sub(r"\\n+\s*(?=\")", "\n", repaired)
+
+        def fix_key(match: Any) -> str:
+            key = re.sub(r"[\r\n]\s*", "", match.group(1))
+            return f'"{key}":'
+
+        previous = None
+        key_pattern = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\s*:', flags=re.DOTALL)
+        while previous != repaired:
+            previous = repaired
+            repaired = key_pattern.sub(fix_key, repaired)
+        return repaired
 
     @staticmethod
     def _pptx_fields_for_log(data: Dict[str, Any], max_items: int = 30) -> Dict[str, Any]:

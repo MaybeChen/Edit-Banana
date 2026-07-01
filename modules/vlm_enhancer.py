@@ -101,17 +101,14 @@ class VLMEnhancer:
         text = cls._normalize_json_text(cls._extract_response_text(response))
         if not text:
             return {}
-        try:
-            parsed = json.loads(text)
-            return parsed if isinstance(parsed, dict) else {}
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-            if match:
-                try:
-                    parsed = json.loads(match.group(0))
-                    return parsed if isinstance(parsed, dict) else {}
-                except json.JSONDecodeError:
-                    return {}
+        parsed = cls._loads_json_object(text)
+        if isinstance(parsed, dict):
+            return parsed
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if match:
+            parsed = cls._loads_json_object(match.group(0))
+            if isinstance(parsed, dict):
+                return parsed
         return {}
 
     @classmethod
@@ -132,8 +129,7 @@ class VLMEnhancer:
                 + json.dumps(
                     {
                         "chars": len(text),
-                        "preview": text[:800],
-                        "truncated": len(text) > 800,
+                        "parse_error": True,
                     },
                     ensure_ascii=False,
                 ),
@@ -147,15 +143,13 @@ class VLMEnhancer:
         text = cls._normalize_json_text(text)
         if not text:
             return {}
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
+        parsed = cls._loads_json_object(text)
+        if parsed is None:
             match = re.search(r"(\{.*\}|\[.*\])", text, flags=re.DOTALL)
             if not match:
                 return {}
-            try:
-                parsed = json.loads(match.group(1))
-            except json.JSONDecodeError:
+            parsed = cls._loads_json_object(match.group(1))
+            if parsed is None:
                 return {}
         if isinstance(parsed, dict):
             return parsed
@@ -188,6 +182,43 @@ class VLMEnhancer:
             normalized = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", normalized, flags=re.IGNORECASE)
             normalized = re.sub(r"\s*```\s*$", "", normalized)
         return normalized.strip()
+
+    @staticmethod
+    def _loads_json_object(text: str) -> Any:
+        """Load JSON with a conservative repair pass for provider line-wrap noise."""
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            repaired = VLMEnhancer._repair_dirty_json_text(text)
+            if repaired == text:
+                return None
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                return None
+
+    @staticmethod
+    def _repair_dirty_json_text(text: str) -> str:
+        """Repair common invalid JSON produced by VLM line wrapping.
+
+        Examples seen in provider output include keys split as
+        ``"font_\nfamily"`` and escaped newlines before the next key such as
+        ``{\\nn "enabled": false}``. This keeps value strings intact while
+        normalizing only key tokens and escaped newlines that precede a key.
+        """
+        repaired = str(text or "")
+        repaired = re.sub(r"\\n+\s*(?=\")", "\n", repaired)
+
+        def fix_key(match: re.Match) -> str:
+            key = re.sub(r"[\r\n]\s*", "", match.group(1))
+            return f'"{key}":'
+
+        previous = None
+        key_pattern = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\s*:', flags=re.DOTALL)
+        while previous != repaired:
+            previous = repaired
+            repaired = key_pattern.sub(fix_key, repaired)
+        return repaired
 
     @staticmethod
     def _print_json(label: str, data: Any) -> None:
