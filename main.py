@@ -339,6 +339,11 @@ class Pipeline:
                 context.intermediate_results['vlm_structure_result_json'] = structure_path
                 if not structure_result.get("recognized"):
                     raise Exception(f"VLM-only recognition failed: {structure_result.get('error', 'no structured result')}")
+                overlay_path = self._save_vlm_structure_overlay(context, img_output_dir)
+                context.intermediate_results['vlm_structure_overlay'] = overlay_path
+                print(f"   VLM structure overlay: {overlay_path}")
+                if structure_result.get("raw_count", 0) and not context.elements:
+                    print("   Warning: VLM returned raw items but none passed schema/bbox validation")
                 print(f"   VLM-only elements: {len(context.elements)}")
 
                 print("\n[4] VLM element attribute enrichment...")
@@ -436,6 +441,47 @@ class Pipeline:
         from PIL import Image
         with Image.open(context.image_path) as img:
             context.canvas_width, context.canvas_height = img.size
+
+    @staticmethod
+    def _save_vlm_structure_overlay(context: ProcessingContext, output_dir: str) -> str:
+        """Save a debug image with VLM-only recognized elements annotated."""
+        from PIL import Image, ImageDraw, ImageFont
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, "vlm_structure_overlay.png")
+        with Image.open(context.image_path) as img:
+            canvas = img.convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+        font = ImageFont.load_default()
+        palette = {
+            "container": "#00a6ff",
+            "rounded rectangle": "#ff5c8a",
+            "rounded_rectangle": "#ff5c8a",
+            "rectangle": "#ff5c8a",
+            "cylinder": "#a855f7",
+            "arrow": "#2563eb",
+            "connector": "#2563eb",
+            "line": "#2563eb",
+            "icon": "#22c55e",
+            "picture": "#22c55e",
+            "logo": "#22c55e",
+            "chart": "#22c55e",
+        }
+        for elem in context.elements:
+            elem_type = str(elem.element_type or "").lower()
+            color = palette.get(elem_type, "#f97316")
+            bbox = elem.bbox
+            if elem_type in {"arrow", "connector", "line"}:
+                start = elem.arrow_start or (bbox.x1, (bbox.y1 + bbox.y2) / 2)
+                end = elem.arrow_end or (bbox.x2, (bbox.y1 + bbox.y2) / 2)
+                draw.line([start, end], fill=color, width=max(2, int(elem.stroke_width or 1)))
+                draw.rectangle(bbox.to_list(), outline=color, width=1)
+            else:
+                draw.rectangle(bbox.to_list(), outline=color, width=2)
+            label = f"{elem.id}:{elem.element_type}"
+            text_xy = (max(0, bbox.x1), max(0, bbox.y1 - 12))
+            draw.text(text_xy, label, fill=color, font=font)
+        canvas.save(output_path)
+        return output_path
 
     def _run_pptx_quality_loop(self, context: ProcessingContext, text_blocks: List[dict], output_dir: str, img_stem: str) -> Optional[str]:
         pptx_path = None

@@ -417,14 +417,19 @@ class VLMEnhancer:
             print(f"[VLMEnhancer] VLM-only structure recognition skipped: {exc}", flush=True)
             return {"recognized": False, "elements": [], "error": str(exc)}
 
-        items = data.get("elements", []) if isinstance(data.get("elements"), list) else []
+        items = self._vlm_structure_items(data)
         elements: List[ElementInfo] = []
         for item in items:
             if not isinstance(item, dict) or self._confidence(item) < threshold:
                 continue
-            new_type = self._sanitize_type(item.get("type"))
-            bbox = item.get("bbox")
-            if not new_type or not isinstance(bbox, list) or len(bbox) != 4:
+            new_type = self._sanitize_type(
+                item.get("type")
+                or item.get("element_type")
+                or item.get("shape_type")
+                or item.get("kind")
+            )
+            bbox = self._extract_vlm_bbox(item)
+            if not new_type or bbox is None:
                 continue
             normalized_bbox = self._normalize_bbox(bbox, context.canvas_width, context.canvas_height)
             if normalized_bbox is None:
@@ -444,12 +449,69 @@ class VLMEnhancer:
         result = {
             "recognized": True,
             "count": len(elements),
+            "raw_count": len(items),
+            "dropped_count": max(0, len(items) - len(elements)),
             "items": items,
             "elements": [elem.to_dict() for elem in elements],
         }
         self._print_json("vlm_structure recognized", result["elements"])
         self._write_artifact(context, "vlm_structure.json", result)
         return result
+
+    @staticmethod
+    def _vlm_structure_items(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Accept common VLM wrappers so valid results are not silently ignored."""
+        for key in ("elements", "page_elements", "objects", "shapes", "items"):
+            values = data.get(key)
+            if isinstance(values, list):
+                return [item for item in values if isinstance(item, dict)]
+        page = data.get("page") or data.get("diagram") or data.get("structure")
+        if isinstance(page, dict):
+            for key in ("elements", "page_elements", "objects", "shapes", "items"):
+                values = page.get(key)
+                if isinstance(values, list):
+                    return [item for item in values if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _extract_vlm_bbox(item: Dict[str, Any]) -> Optional[List[Any]]:
+        """Normalize common bbox/geometry formats returned by VLMs."""
+        bbox = item.get("bbox") or item.get("bounding_box") or item.get("box")
+        if isinstance(bbox, list) and len(bbox) == 4:
+            return bbox
+        if isinstance(bbox, dict):
+            return VLMEnhancer._bbox_from_dict(bbox)
+        geometry = item.get("geometry") or item.get("position") or item.get("rect")
+        if isinstance(geometry, dict):
+            return VLMEnhancer._bbox_from_dict(geometry)
+        coords = [item.get(key) for key in ("x1", "y1", "x2", "y2")]
+        if all(value is not None for value in coords):
+            return coords
+        xywh = [item.get(key) for key in ("x", "y", "width", "height")]
+        if all(value is not None for value in xywh):
+            try:
+                x, y, width, height = [float(value) for value in xywh]
+            except (TypeError, ValueError):
+                return None
+            return [x, y, x + width, y + height]
+        return None
+
+    @staticmethod
+    def _bbox_from_dict(data: Dict[str, Any]) -> Optional[List[Any]]:
+        if all(key in data for key in ("x1", "y1", "x2", "y2")):
+            return [data["x1"], data["y1"], data["x2"], data["y2"]]
+        if all(key in data for key in ("left", "top", "right", "bottom")):
+            return [data["left"], data["top"], data["right"], data["bottom"]]
+        if all(key in data for key in ("x", "y", "width", "height")):
+            try:
+                x = float(data["x"])
+                y = float(data["y"])
+                width = float(data["width"])
+                height = float(data["height"])
+            except (TypeError, ValueError):
+                return None
+            return [x, y, x + width, y + height]
+        return None
 
     @staticmethod
     def _normalize_bbox(bbox: List[Any], canvas_width: int, canvas_height: int) -> Optional[List[int]]:
@@ -472,30 +534,34 @@ class VLMEnhancer:
         return [x1, y1, x2, y2]
 
     def _apply_vlm_structure_attributes(self, elem: ElementInfo, item: Dict[str, Any]) -> None:
-        line_style = self._normalize_line_style(item.get("line_style"))
+        style = item.get("style") if isinstance(item.get("style"), dict) else {}
+        line_style = self._normalize_line_style(item.get("line_style") or style.get("line_style") or style.get("dash"))
         if line_style:
             elem.line_style = line_style
-        arrow_heads = self._normalize_arrow_heads(item.get("arrow_heads"))
+        arrow_heads = self._normalize_arrow_heads(item.get("arrow_heads") or item.get("end_arrow") or item.get("arrowhead"))
         if arrow_heads:
             elem.arrow_heads = arrow_heads
         arrow_style = str(item.get("arrow_style") or item.get("curve") or "").strip().lower()
         if arrow_style in {"curved", "curve", "arc"} or item.get("is_curved") is True:
             elem.arrow_style = "curved"
-        fill = self._valid_hex_color(item.get("fill_color"))
-        stroke = self._valid_hex_color(item.get("stroke_color"))
+        fill_value = item.get("fill_color") or item.get("fill") or style.get("fill_color") or style.get("fill")
+        stroke_value = item.get("stroke_color") or item.get("stroke") or style.get("stroke_color") or style.get("stroke")
+        fill = self._valid_hex_color(fill_value)
+        stroke = self._valid_hex_color(stroke_value)
         if fill:
             elem.fill_color = fill
-        if str(item.get("fill_color", "")).strip().lower() == "none":
+        if str(fill_value or "").strip().lower() == "none":
             elem.fill_color = "none"
         if stroke:
             elem.stroke_color = stroke
         try:
-            if item.get("stroke_width") is not None:
-                elem.stroke_width = max(1, min(12, int(round(float(item.get("stroke_width"))))))
+            stroke_width = item.get("stroke_width", style.get("stroke_width"))
+            if stroke_width is not None:
+                elem.stroke_width = max(1, min(12, int(round(float(stroke_width)))))
         except (TypeError, ValueError):
             pass
         for attr, field_name in (("arrow_start", "arrow_start"), ("arrow_end", "arrow_end")):
-            point = item.get(attr)
+            point = item.get(attr) or item.get("start" if attr == "arrow_start" else "end")
             if isinstance(point, list) and len(point) >= 2:
                 try:
                     setattr(elem, field_name, (float(point[0]), float(point[1])))
