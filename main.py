@@ -93,6 +93,9 @@ def load_config() -> dict:
                 'input_dir': './input',
                 'output_dir': './output',
             },
+            'recognition': {
+                'mode': 'sam3_first',
+            },
             'multimodal': {
                 'mode': 'api',
                 'api_key': '',
@@ -120,6 +123,7 @@ def load_config() -> dict:
                     'text_style_confidence': 0.65,
                     'segmentation_refine_confidence': 0.65,
                     'element_attribute_confidence': 0.65,
+                    'vlm_structure_confidence': 0.60,
                 },
             },
             'ocr': {
@@ -326,6 +330,29 @@ class Pipeline:
                 print(f"   VLM text styles: {styled.get('updated', 0)} updated")
                 print(f"   VLM text result: {text_style_path}")
 
+            if self._recognition_mode() == "vlm_only":
+                print("\n[3] VLM-only structure recognition...")
+                self._initialize_canvas_from_image(context)
+                structure_result = self.vlm_enhancer.recognize_structure(context)
+                structure_path = os.path.join(img_output_dir, "vlm_structure_result.json")
+                self._save_json(structure_path, structure_result)
+                context.intermediate_results['vlm_structure_result_json'] = structure_path
+                if not structure_result.get("recognized"):
+                    raise Exception(f"VLM-only recognition failed: {structure_result.get('error', 'no structured result')}")
+                print(f"   VLM-only elements: {len(context.elements)}")
+
+                print("\n[4] VLM element attribute enrichment...")
+                attr_result = self.vlm_enhancer.enrich_element_attributes(context)
+                attr_path = os.path.join(img_output_dir, "vlm_element_attributes.json")
+                self._save_json(attr_path, {"elements": [e.to_dict() for e in context.elements], "changes": attr_result.get("changes", [])})
+                context.intermediate_results['vlm_element_attributes_json'] = attr_path
+                print(f"   VLM element attributes: {attr_result.get('updated', 0)} updated")
+
+                print("\n[5] Direct PPTX generation + VLM quality loop...")
+                pptx_path = self._run_pptx_quality_loop(context, text_blocks, img_output_dir, img_stem)
+                print(f"\n{'='*60}\nDone.\n{'='*60}")
+                return pptx_path
+
             print("\n[3] SAM3 segmentation (coarse prompts)...")
             if groups:
                 all_elements = []
@@ -381,23 +408,7 @@ class Pipeline:
             print(f"   VLM element attributes: {attr_result.get('updated', 0)} updated")
 
             print("\n[7] Direct PPTX generation + VLM quality loop...")
-            pptx_path = None
-            max_rounds = int((self.config.get("multimodal") or {}).get("max_quality_rounds", 3) or 3)
-            quality_threshold = float((self.config.get("multimodal") or {}).get("quality_threshold", 90) or 90)
-            for round_idx in range(1, max_rounds + 1):
-                pptx_elements = self._prepare_pptx_elements(context)
-                pptx_path = self._export_pptx_direct(context, pptx_elements, text_blocks, img_output_dir, img_stem)
-                context.intermediate_results['pptx_output'] = pptx_path
-                print(f"   Round {round_idx} PPTX: {pptx_path}")
-                validation = self.vlm_enhancer.validate_pptx_export(context, pptx_path, round_idx)
-                score = float(validation.get("score", 100) or 0)
-                print(f"   Round {round_idx} quality score: {score:.1f}/100")
-                if score >= quality_threshold or round_idx >= max_rounds:
-                    break
-                repairs = self.vlm_enhancer.apply_export_repairs(context, validation)
-                if repairs.get("updated", 0) == 0 and repairs.get("added", 0) == 0:
-                    print("   No structured repairs returned; stopping quality loop")
-                    break
+            pptx_path = self._run_pptx_quality_loop(context, text_blocks, img_output_dir, img_stem)
 
             print(f"\n{'='*60}\nDone.\n{'='*60}")
             return pptx_path
@@ -414,6 +425,37 @@ class Pipeline:
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return path
+
+    def _recognition_mode(self) -> str:
+        recognition_cfg = self.config.get("recognition") or {}
+        mode = recognition_cfg.get("mode") or (self.config.get("multimodal") or {}).get("recognition_mode") or "sam3_first"
+        return str(mode).strip().lower().replace("-", "_")
+
+    @staticmethod
+    def _initialize_canvas_from_image(context: ProcessingContext) -> None:
+        from PIL import Image
+        with Image.open(context.image_path) as img:
+            context.canvas_width, context.canvas_height = img.size
+
+    def _run_pptx_quality_loop(self, context: ProcessingContext, text_blocks: List[dict], output_dir: str, img_stem: str) -> Optional[str]:
+        pptx_path = None
+        max_rounds = int((self.config.get("multimodal") or {}).get("max_quality_rounds", 3) or 3)
+        quality_threshold = float((self.config.get("multimodal") or {}).get("quality_threshold", 90) or 90)
+        for round_idx in range(1, max_rounds + 1):
+            pptx_elements = self._prepare_pptx_elements(context)
+            pptx_path = self._export_pptx_direct(context, pptx_elements, text_blocks, output_dir, img_stem)
+            context.intermediate_results['pptx_output'] = pptx_path
+            print(f"   Round {round_idx} PPTX: {pptx_path}")
+            validation = self.vlm_enhancer.validate_pptx_export(context, pptx_path, round_idx)
+            score = float(validation.get("score", 100) or 0)
+            print(f"   Round {round_idx} quality score: {score:.1f}/100")
+            if score >= quality_threshold or round_idx >= max_rounds:
+                break
+            repairs = self.vlm_enhancer.apply_export_repairs(context, validation)
+            if repairs.get("updated", 0) == 0 and repairs.get("added", 0) == 0:
+                print("   No structured repairs returned; stopping quality loop")
+                break
+        return pptx_path
 
     def _prepare_pptx_elements(self, context: ProcessingContext) -> List[ElementInfo]:
         """Prepare recognized elements for direct PPTX export."""
@@ -432,11 +474,16 @@ class Pipeline:
                     if self._is_duplicate_line_fragment(elem, context.elements):
                         elem.processing_notes.append("Skipped duplicate line fragment contained by an arrow")
                         continue
-                    elem.arrow_start, elem.arrow_end = self._infer_edge_points(elem, context.elements)
+                    if not elem.arrow_start or not elem.arrow_end:
+                        elem.arrow_start, elem.arrow_end = self._infer_edge_points(elem, context.elements)
                     inferred_heads = self._infer_arrow_heads_from_polygon(elem)
                     if inferred_heads and elem.arrow_heads in {None, "none"}:
                         elem.arrow_heads = inferred_heads
-                    if elem.line_style not in {"dashed", "dotted"} and self._edge_looks_dashed(elem, context):
+                    if (
+                        self._recognition_mode() != "vlm_only"
+                        and elem.line_style not in {"dashed", "dotted"}
+                        and self._edge_looks_dashed(elem, context)
+                    ):
                         elem.line_style = "dashed"
                     if self._edge_looks_curved(elem):
                         elem.arrow_style = "curved"
@@ -453,7 +500,16 @@ class Pipeline:
                 elem.layer_level = LayerLevel.BACKGROUND.value
 
             elif elem_type in {'icon', 'picture', 'logo', 'chart', 'function_graph'}:
-                elem.layer_level = LayerLevel.IMAGE.value
+                if elem.base64:
+                    elem.layer_level = LayerLevel.IMAGE.value
+                else:
+                    # VLM-only mode has no SAM mask crop for icons/pictures; export a
+                    # visible placeholder box instead of silently dropping the element.
+                    elem.element_type = "rectangle"
+                    elem.fill_color = "none"
+                    elem.stroke_color = elem.stroke_color or "#000000"
+                    elem.stroke_width = max(1, int(elem.stroke_width or 1))
+                    elem.layer_level = LayerLevel.BASIC_SHAPE.value
 
             else:
                 if elem_type in {"rectangle", "rounded rectangle", "rounded_rectangle", "container", "cylinder"}:
@@ -466,7 +522,8 @@ class Pipeline:
 
             prepared.append(elem)
 
-        prepared.extend(self._detect_missing_divider_lines(context, prepared))
+        if self._recognition_mode() != "vlm_only":
+            prepared.extend(self._detect_missing_divider_lines(context, prepared))
         return prepared
 
 
@@ -812,6 +869,8 @@ Examples:
     parser.add_argument("--groups", nargs='+', 
                         choices=['image', 'arrow', 'shape', 'background'],
                         help="Prompt groups to process (default: all)")
+    parser.add_argument("--vlm-only", action="store_true",
+                        help="Skip SAM3 and use VLM-only page structure recognition")
     parser.add_argument("--show-prompts", action="store_true",
                         help="Show prompt config")
     
@@ -827,6 +886,8 @@ Examples:
     config = load_config()
     
     # Create pipeline
+    if args.vlm_only:
+        config.setdefault("recognition", {})["mode"] = "vlm_only"
     pipeline = Pipeline(config)
     
     # Parse group args
