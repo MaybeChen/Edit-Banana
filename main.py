@@ -434,7 +434,7 @@ class Pipeline:
                 # shape prompts. Export them as transparent background containers so
                 # their borders remain visible without covering inner content.
                 elem.element_type = "container"
-                elem.fill_color = elem.fill_color or "none"
+                elem.fill_color = "none"
                 elem.stroke_color = elem.stroke_color or "#000000"
                 elem.stroke_width = max(1, int(elem.stroke_width or 1))
                 elem.layer_level = LayerLevel.BACKGROUND.value
@@ -443,7 +443,10 @@ class Pipeline:
                 elem.layer_level = LayerLevel.IMAGE.value
 
             else:
-                elem.fill_color = elem.fill_color or "#ffffff"
+                if elem_type in {"rectangle", "rounded rectangle", "rounded_rectangle", "container", "cylinder"}:
+                    elem.fill_color = "none"
+                else:
+                    elem.fill_color = elem.fill_color or "#ffffff"
                 elem.stroke_color = elem.stroke_color or "#000000"
                 elem.stroke_width = max(1, int(elem.stroke_width or 1))
                 elem.layer_level = LayerLevel.BASIC_SHAPE.value
