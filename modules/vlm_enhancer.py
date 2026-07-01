@@ -16,6 +16,7 @@ from .base import ProcessingContext
 from .data_types import BoundingBox, ElementInfo
 from .sam3_info_extractor import PromptGroup
 from .vlm_client import create_vlm_client_from_config
+from prompts.vlm_structure import VLM_STRUCTURE_PROMPT
 
 
 CANONICAL_TYPES = {
@@ -394,20 +395,7 @@ class VLMEnhancer:
         if not self.enabled or self.client is None:
             return {"recognized": False, "elements": [], "error": "multimodal VLM is disabled"}
         threshold = float(self.thresholds.get("vlm_structure_confidence", 0.60))
-        canvas = {"width": context.canvas_width, "height": context.canvas_height}
-        ocr_context = self._summarize_ocr_context(context, self.max_elements)
-        prompt = (
-            "你是页面结构等价识别器。请直接根据原图和 OCR 文本锚点识别可编辑 PPTX 结构，不要依赖 SAM3。"
-            + self._json_only_instruction(
-                '{"elements":[{"type":"container","bbox":[10,20,300,180],"fill_color":"none","stroke_color":"#333333","stroke_width":1,"line_style":"solid","arrow_heads":"none","arrow_start":[10,20],"arrow_end":[300,20],"confidence":0.9}]}'
-            )
-            + "只输出非文本图形元素；文本已经由 OCR 单独导出，不要为普通文字创建 text 元素。"
-            "type 只能选 rectangle,rounded rectangle,circle,ellipse,cylinder,diamond,triangle,hexagon,container,arrow,connector,line,icon,picture,logo,chart。"
-            "bbox 必须是原图像素坐标 [x1,y1,x2,y2]。容器/背景框用 container；普通卡片用 rounded rectangle 或 rectangle；数据库/顶部椭圆分层块用 cylinder。"
-            "箭头和线条需要给 arrow_start/arrow_end 坐标；arrow_heads 只能是 none/start/end/both；line_style 只能是 solid/dashed/dotted/null；弧形箭头设置 arrow_style=curved。"
-            "不要输出文字笔画、图标内部装饰线、截图选中框控制点或仅由 OCR 字符组成的伪元素。"
-            f"画布：{json.dumps(canvas, ensure_ascii=False)}；OCR文本锚点：{json.dumps(ocr_context, ensure_ascii=False)}"
-        )
+        prompt = VLM_STRUCTURE_PROMPT
         try:
             data = self._parse_json_response_with_debug(self.client.analyze_image(context.image_path, prompt), "vlm_structure")
         except Exception as exc:
@@ -419,26 +407,22 @@ class VLMEnhancer:
         for item in items:
             if not isinstance(item, dict) or self._confidence(item) < threshold:
                 continue
-            new_type = self._sanitize_type(
-                item.get("type")
-                or item.get("element_type")
-                or item.get("shape_type")
-                or item.get("kind")
-            )
+            new_type = self._vlm_structure_element_type(item)
             bbox = self._extract_vlm_bbox(item)
             if not new_type or bbox is None:
                 continue
-            normalized_bbox = self._normalize_bbox(bbox, context.canvas_width, context.canvas_height)
+            normalized_bbox = self._normalize_bbox(bbox, 1000, 1000)
             if normalized_bbox is None:
                 continue
+            pixel_bbox = self._scale_normalized_bbox(normalized_bbox, context.canvas_width, context.canvas_height)
             elem = ElementInfo(
                 id=len(elements),
                 element_type=new_type,
-                bbox=BoundingBox.from_list(normalized_bbox),
+                bbox=BoundingBox.from_list(pixel_bbox),
                 score=self._confidence(item),
                 source_prompt="vlm_structure",
             )
-            self._apply_vlm_structure_attributes(elem, item)
+            self._apply_vlm_structure_attributes(elem, item, context.canvas_width, context.canvas_height)
             elem.processing_notes.append("vlm_structure")
             elements.append(elem)
 
@@ -458,17 +442,59 @@ class VLMEnhancer:
     @staticmethod
     def _vlm_structure_items(data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Accept common VLM wrappers so valid results are not silently ignored."""
+        background = data.get("background")
+        prefix = []
+        if isinstance(background, dict):
+            background_item = dict(background)
+            background_item.setdefault("type", "background")
+            background_item.setdefault("bbox", {"x": 0, "y": 0, "width": 1000, "height": 1000})
+            background_item.setdefault("confidence", 1.0)
+            prefix.append(background_item)
         for key in ("elements", "page_elements", "objects", "shapes", "items"):
             values = data.get(key)
             if isinstance(values, list):
-                return [item for item in values if isinstance(item, dict)]
+                return prefix + [item for item in values if isinstance(item, dict)]
         page = data.get("page") or data.get("diagram") or data.get("structure")
         if isinstance(page, dict):
             for key in ("elements", "page_elements", "objects", "shapes", "items"):
                 values = page.get(key)
                 if isinstance(values, list):
-                    return [item for item in values if isinstance(item, dict)]
-        return []
+                    return prefix + [item for item in values if isinstance(item, dict)]
+        return prefix
+
+    def _vlm_structure_element_type(self, item: Dict[str, Any]) -> Optional[str]:
+        raw_type = item.get("type") or item.get("element_type") or item.get("shape_type") or item.get("kind")
+        subtype = str(item.get("subtype") or item.get("shape_type") or "").strip().lower().replace("_", " ")
+        direct = self._sanitize_type(raw_type)
+        if direct and direct != "text":
+            return direct
+
+        normalized = str(raw_type or "").strip().lower().replace("_", " ")
+        if normalized in {"background", "container"}:
+            return "container"
+        if normalized == "shape":
+            shape_aliases = {
+                "rounded rectangle": "rounded rectangle",
+                "circle": "circle",
+                "ellipse": "ellipse",
+                "triangle": "triangle",
+                "diamond": "diamond",
+                "hexagon": "hexagon",
+                "pill": "rounded rectangle",
+                "parallelogram": "parallelogram",
+            }
+            return shape_aliases.get(subtype, "rectangle")
+        if normalized in {"line", "arrow", "icon", "logo", "chart"}:
+            return normalized
+        if normalized in {"image", "complex visual", "complex_visual", "unknown"}:
+            return "picture"
+        if normalized in {"table", "diagram", "decoration", "group"}:
+            return "container" if normalized in {"table", "diagram", "group"} else "rectangle"
+        # Text is handled by OCR text_blocks in this pipeline to avoid duplicate
+        # text rendering from the VLM structure pass.
+        if normalized == "text":
+            return None
+        return None
 
     @staticmethod
     def _extract_vlm_bbox(item: Dict[str, Any]) -> Optional[List[Any]]:
@@ -492,6 +518,18 @@ class VLMEnhancer:
                 return None
             return [x, y, x + width, y + height]
         return None
+
+    @staticmethod
+    def _scale_normalized_bbox(bbox: List[int], canvas_width: int, canvas_height: int) -> List[int]:
+        width = max(1, int(canvas_width or 1000))
+        height = max(1, int(canvas_height or 1000))
+        x1, y1, x2, y2 = bbox
+        return [
+            int(round(x1 * width / 1000)),
+            int(round(y1 * height / 1000)),
+            int(round(x2 * width / 1000)),
+            int(round(y2 * height / 1000)),
+        ]
 
     @staticmethod
     def _bbox_from_dict(data: Dict[str, Any]) -> Optional[List[Any]]:
@@ -530,21 +568,35 @@ class VLMEnhancer:
             return None
         return [x1, y1, x2, y2]
 
-    def _apply_vlm_structure_attributes(self, elem: ElementInfo, item: Dict[str, Any]) -> None:
+    def _apply_vlm_structure_attributes(
+        self,
+        elem: ElementInfo,
+        item: Dict[str, Any],
+        canvas_width: int = 1000,
+        canvas_height: int = 1000,
+    ) -> None:
         style = item.get("style") if isinstance(item.get("style"), dict) else {}
-        line_style = self._normalize_line_style(item.get("line_style") or style.get("line_style") or style.get("dash"))
+        stroke_value = item.get("stroke_color") or item.get("stroke") or style.get("stroke_color") or style.get("stroke")
+        stroke_style = stroke_value if isinstance(stroke_value, dict) else {}
+        line_style = self._normalize_line_style(
+            item.get("line_style")
+            or style.get("line_style")
+            or style.get("dash")
+            or stroke_style.get("dash")
+        )
         if line_style:
             elem.line_style = line_style
         arrow_heads = self._normalize_arrow_heads(item.get("arrow_heads") or item.get("end_arrow") or item.get("arrowhead"))
+        if not arrow_heads:
+            arrow_heads = self._arrow_heads_from_head_tail(item.get("arrow_head"), item.get("arrow_tail"))
         if arrow_heads:
             elem.arrow_heads = arrow_heads
         arrow_style = str(item.get("arrow_style") or item.get("curve") or "").strip().lower()
         if arrow_style in {"curved", "curve", "arc"} or item.get("is_curved") is True:
             elem.arrow_style = "curved"
         fill_value = item.get("fill_color") or item.get("fill") or style.get("fill_color") or style.get("fill")
-        stroke_value = item.get("stroke_color") or item.get("stroke") or style.get("stroke_color") or style.get("stroke")
-        fill = self._valid_hex_color(fill_value)
-        stroke = self._valid_hex_color(stroke_value)
+        fill = self._valid_hex_color(self._color_value(fill_value))
+        stroke = self._valid_hex_color(self._color_value(stroke_value))
         if fill:
             elem.fill_color = fill
         if str(fill_value or "").strip().lower() == "none":
@@ -553,17 +605,61 @@ class VLMEnhancer:
             elem.stroke_color = stroke
         try:
             stroke_width = item.get("stroke_width", style.get("stroke_width"))
+            if stroke_width is None and isinstance(stroke_value, dict):
+                stroke_width = stroke_value.get("width")
             if stroke_width is not None:
                 elem.stroke_width = max(1, min(12, int(round(float(stroke_width)))))
         except (TypeError, ValueError):
             pass
-        for attr, field_name in (("arrow_start", "arrow_start"), ("arrow_end", "arrow_end")):
-            point = item.get(attr) or item.get("start" if attr == "arrow_start" else "end")
-            if isinstance(point, list) and len(point) >= 2:
-                try:
-                    setattr(elem, field_name, (float(point[0]), float(point[1])))
-                except (TypeError, ValueError):
-                    pass
+        point_aliases = (
+            ("arrow_start", "start_point", "start"),
+            ("arrow_end", "end_point", "end"),
+        )
+        for field_name, primary, fallback in point_aliases:
+            point = item.get(primary) or item.get(fallback)
+            normalized_point = self._normalize_point(point)
+            if normalized_point is not None:
+                setattr(
+                    elem,
+                    field_name,
+                    (
+                        normalized_point[0] * max(1, int(canvas_width or 1000)) / 1000,
+                        normalized_point[1] * max(1, int(canvas_height or 1000)) / 1000,
+                    ),
+                )
+
+    @staticmethod
+    def _normalize_point(point: Any) -> Optional[tuple]:
+        if isinstance(point, dict):
+            point = [point.get("x"), point.get("y")]
+        if isinstance(point, list) and len(point) >= 2:
+            try:
+                x = max(0.0, min(1000.0, float(point[0])))
+                y = max(0.0, min(1000.0, float(point[1])))
+                return x, y
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    @staticmethod
+    def _color_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            return value.get("color")
+        return value
+
+    @staticmethod
+    def _arrow_heads_from_head_tail(head: Any, tail: Any) -> Optional[str]:
+        head_text = str(head or "").strip().lower()
+        tail_text = str(tail or "").strip().lower()
+        has_head = head_text not in {"", "none", "null", "no"}
+        has_tail = tail_text not in {"", "none", "null", "no"}
+        if has_head and has_tail:
+            return "both"
+        if has_head:
+            return "end"
+        if has_tail:
+            return "start"
+        return None
 
     def refine_elements(self, context: ProcessingContext) -> Dict[str, Any]:
         """Ask VLM to correct SAM3 element types and line styles."""
