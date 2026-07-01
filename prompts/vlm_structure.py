@@ -784,6 +784,8 @@ image_fallback
 
 layout_summary 必须输出 page_aspect_ratio_estimate、page_structure、layout_pattern、main_alignment、grid_columns、grid_rows、estimated_margin、reading_order。
 
+重要：先完整输出 `elements`，再输出 `layout_summary`。`reading_order` 只能引用已经出现在 `elements` 中的 id，不要预先生成 elem_001、elem_002 这类占位 id；最多输出 120 个 id，元素更多时只保留主要可编辑元素的阅读顺序。
+
 ---
 
 # Relationship Schema
@@ -840,6 +842,7 @@ relationships 必须包含 parent_child、connectors、alignment_groups、repeat
     "editable_strategy": "native_shape",
     "fill": {"type": "solid", "color": "#FFFFFF", "transparency": 0}
   },
+  "elements": [],
   "layout_summary": {
     "page_aspect_ratio_estimate": "16:9",
     "page_structure": "",
@@ -851,7 +854,6 @@ relationships 必须包含 parent_child、connectors、alignment_groups、repeat
     "reading_order": []
   },
   "groups": [],
-  "elements": [],
   "relationships": {
     "parent_child": [],
     "connectors": [],
@@ -889,5 +891,6 @@ relationships 必须包含 parent_child、connectors、alignment_groups、repeat
 8. 所有 editable_strategy 必须来自预定义枚举。
 9. 复杂或低置信度元素必须明确使用 cropped_image、hybrid 或 image_fallback。
 10. 不要输出图片原始宽高或像素坐标。
+11. 不要生成没有对应 element 的 reading_order id；reading_order 必须简短，最多 120 项。
 ```
 """.strip()
