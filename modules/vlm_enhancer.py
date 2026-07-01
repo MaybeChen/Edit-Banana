@@ -127,7 +127,18 @@ class VLMEnhancer:
             cls._print_json(f"{stage} parsed", coerced)
             return coerced
         if text:
-            print(f"[VLMEnhancer] {stage} returned non-JSON response: {text}", flush=True)
+            print(
+                f"[VLMEnhancer] {stage} returned non-JSON response: "
+                + json.dumps(
+                    {
+                        "chars": len(text),
+                        "preview": text[:800],
+                        "truncated": len(text) > 800,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
         return {}
 
     @classmethod
@@ -180,9 +191,106 @@ class VLMEnhancer:
 
     @staticmethod
     def _print_json(label: str, data: Any) -> None:
-        """Print full structured VLM data; image/base64 content is omitted upstream."""
-        text = json.dumps(data, ensure_ascii=False)
+        """Print only PPTX-relevant VLM data instead of the full raw response."""
+        text = json.dumps(VLMEnhancer._pptx_log_payload(data), ensure_ascii=False)
         print(f"[VLMEnhancer] {label}: {text}", flush=True)
+
+    @staticmethod
+    def _pptx_log_payload(data: Any, max_items: int = 30) -> Any:
+        """Keep logs focused on fields used by PPTX reconstruction."""
+        if isinstance(data, list):
+            return {
+                "count": len(data),
+                "items": [VLMEnhancer._pptx_log_item(item) for item in data[:max_items]],
+                "truncated": len(data) > max_items,
+            }
+        if not isinstance(data, dict):
+            return data
+
+        payload: Dict[str, Any] = {}
+        for key in ("score", "pass", "updated", "added", "count", "raw_count", "dropped_count", "recognized", "error"):
+            if key in data:
+                payload[key] = data[key]
+
+        for key in ("elements", "text_blocks", "changes", "items", "issues"):
+            values = data.get(key)
+            if isinstance(values, list):
+                payload[key] = {
+                    "count": len(values),
+                    "items": [VLMEnhancer._pptx_log_item(item) for item in values[:max_items]],
+                    "truncated": len(values) > max_items,
+                }
+            elif isinstance(values, dict):
+                compact_values = VLMEnhancer._coerce_vlm_item_collection(values)
+                payload[key] = {
+                    "count": len(compact_values),
+                    "items": [VLMEnhancer._pptx_log_item(item) for item in compact_values[:max_items]],
+                    "truncated": len(compact_values) > max_items,
+                }
+
+        repairs = data.get("repairs")
+        if isinstance(repairs, dict):
+            payload["repairs"] = VLMEnhancer._pptx_log_payload(repairs, max_items=max_items)
+
+        if "background" in data:
+            payload["background"] = VLMEnhancer._pptx_log_item(data["background"])
+        if "reconstruction_summary" in data and isinstance(data["reconstruction_summary"], dict):
+            summary = data["reconstruction_summary"]
+            payload["reconstruction_summary"] = {
+                key: summary.get(key)
+                for key in (
+                    "native_text_count",
+                    "native_shape_count",
+                    "native_line_count",
+                    "cropped_image_count",
+                    "image_fallback_count",
+                    "overall_reconstruction_confidence",
+                )
+                if key in summary
+            }
+
+        return payload or {"type": type(data).__name__, "keys": sorted(data.keys())[:20]}
+
+    @staticmethod
+    def _pptx_log_item(item: Any) -> Any:
+        if not isinstance(item, dict):
+            return item
+        compact: Dict[str, Any] = {}
+        for key in (
+            "id",
+            "element_id",
+            "source_element_id",
+            "type",
+            "element_type",
+            "subtype",
+            "bbox",
+            "content",
+            "text",
+            "font_size",
+            "font_size_estimate",
+            "font_color",
+            "text_align",
+            "fill_color",
+            "stroke_color",
+            "stroke_width",
+            "line_style",
+            "arrow_heads",
+            "source_id",
+            "target_id",
+            "confidence",
+            "score",
+            "severity",
+            "description",
+            "action",
+        ):
+            if key in item:
+                compact[key] = item[key]
+        style = item.get("style")
+        if isinstance(style, dict):
+            for key in ("font_size", "font_size_estimate", "font_color", "text_align", "fill", "stroke"):
+                if key in style:
+                    compact.setdefault(key, style[key])
+        return compact or {"keys": sorted(item.keys())[:12]}
 
     @staticmethod
     def _json_only_instruction(schema: str) -> str:

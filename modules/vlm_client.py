@@ -142,6 +142,109 @@ class VLMClient:
             summarized.append(msg)
         return summarized
 
+    def _summarize_response_for_log(self, result: Any, raw_text: str) -> Dict[str, Any]:
+        """Log response metadata and compact PPTX-related fields only."""
+        summary: Dict[str, Any] = {"body_chars": len(raw_text or "")}
+        content = self._extract_response_content_for_log(result)
+        if content:
+            parsed = self._try_parse_json_content(content)
+            if isinstance(parsed, dict):
+                summary["pptx"] = self._pptx_fields_for_log(parsed)
+            else:
+                preview_chars = self.response_log_chars if self.response_log_chars > 0 else 800
+                summary["content_preview"] = content[:preview_chars]
+                summary["content_truncated"] = len(content) > preview_chars
+        return summary
+
+    @staticmethod
+    def _extract_response_content_for_log(result: Any) -> str:
+        if not isinstance(result, dict):
+            return ""
+        if isinstance(result.get("content"), str):
+            return result["content"]
+        choices = result.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0] if isinstance(choices[0], dict) else {}
+            message = first.get("message") if isinstance(first, dict) else {}
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):
+                    return "\n".join(
+                        part.get("text", "")
+                        for part in content
+                        if isinstance(part, dict) and isinstance(part.get("text"), str)
+                    )
+            text = first.get("text") if isinstance(first, dict) else None
+            if isinstance(text, str):
+                return text
+        return ""
+
+    @staticmethod
+    def _try_parse_json_content(content: str) -> Any:
+        text = str(content or "").strip()
+        if "\\n" in text and "\n" not in text:
+            text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+        if text.startswith("```"):
+            import re
+
+            text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
+            text = re.sub(r"\s*```\s*$", "", text)
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _pptx_fields_for_log(data: Dict[str, Any], max_items: int = 30) -> Dict[str, Any]:
+        def compact_item(item: Any) -> Any:
+            if not isinstance(item, dict):
+                return item
+            return {
+                key: item[key]
+                for key in (
+                    "id",
+                    "type",
+                    "subtype",
+                    "bbox",
+                    "content",
+                    "text",
+                    "font_size",
+                    "font_size_estimate",
+                    "font_color",
+                    "fill_color",
+                    "stroke_color",
+                    "stroke_width",
+                    "line_style",
+                    "confidence",
+                )
+                if key in item
+            }
+
+        summary: Dict[str, Any] = {}
+        if isinstance(data.get("background"), dict):
+            summary["background"] = compact_item(data["background"])
+        elements = data.get("elements")
+        if isinstance(elements, dict):
+            elements = [dict(value, id=key) if isinstance(value, dict) and "id" not in value else value for key, value in elements.items()]
+        if isinstance(elements, list):
+            summary["elements"] = {
+                "count": len(elements),
+                "items": [compact_item(item) for item in elements[:max_items]],
+                "truncated": len(elements) > max_items,
+            }
+        text_blocks = data.get("text_blocks")
+        if isinstance(text_blocks, list):
+            summary["text_blocks"] = {
+                "count": len(text_blocks),
+                "items": [compact_item(item) for item in text_blocks[:max_items]],
+                "truncated": len(text_blocks) > max_items,
+            }
+        if isinstance(data.get("reconstruction_summary"), dict):
+            summary["reconstruction_summary"] = data["reconstruction_summary"]
+        return summary
+
     @staticmethod
     def _image_to_base64(image_path: str) -> str:
         """Encode a local image as a plain base64 string."""
@@ -227,7 +330,9 @@ class VLMClient:
                     {
                         "status_code": response.status_code,
                         "url": response.url,
-                        "body": response.text,
+                        "body_chars": len(response.text),
+                        "body_preview": response.text[:800],
+                        "body_truncated": len(response.text) > 800,
                     },
                     ensure_ascii=False,
                 ),
@@ -236,14 +341,14 @@ class VLMClient:
         response.raise_for_status()
         result = response.json()
         if self.log_response:
+            response_summary = self._summarize_response_for_log(result, response.text)
             print(
                 "[VLMClient] response "
                 + json.dumps(
                     {
                         "status_code": response.status_code,
                         "url": response.url,
-                        "body_chars": len(response.text),
-                        "body": response.text,
+                        **response_summary,
                     },
                     ensure_ascii=False,
                 ),
