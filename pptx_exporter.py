@@ -59,6 +59,8 @@ def export_elements_to_pptx(
         elif elem_type in IMAGE_TYPES:
             if getattr(elem, "base64", None):
                 _add_image_from_element(slide, elem, Emu)
+            elif int(getattr(elem, "layer_level", 5) or 5) == 0:
+                _add_shape_from_element(slide, elem, MSO_AUTO_SHAPE_TYPE, Emu, Pt, RGBColor)
         else:
             _add_shape_from_element(slide, elem, MSO_AUTO_SHAPE_TYPE, Emu, Pt, RGBColor)
 

@@ -429,14 +429,18 @@ class Pipeline:
                     elem.line_style = "dashed"
                 elem.layer_level = LayerLevel.ARROW.value
 
-            elif elem_type in {'icon', 'picture', 'logo', 'chart', 'function_graph'}:
-                elem.layer_level = LayerLevel.IMAGE.value
-
-            elif elem_type in {'section_panel', 'title_bar', 'container'}:
-                elem.fill_color = elem.fill_color or "#ffffff"
+            elif self._is_background_like_element(elem, context):
+                # Large panels/frames are often detected by SAM3 as generic image or
+                # shape prompts. Export them as transparent background containers so
+                # their borders remain visible without covering inner content.
+                elem.element_type = "container"
+                elem.fill_color = elem.fill_color or "none"
                 elem.stroke_color = elem.stroke_color or "#000000"
                 elem.stroke_width = max(1, int(elem.stroke_width or 1))
                 elem.layer_level = LayerLevel.BACKGROUND.value
+
+            elif elem_type in {'icon', 'picture', 'logo', 'chart', 'function_graph'}:
+                elem.layer_level = LayerLevel.IMAGE.value
 
             else:
                 elem.fill_color = elem.fill_color or "#ffffff"
@@ -446,6 +450,15 @@ class Pipeline:
 
             prepared.append(elem)
         return prepared
+
+
+    @staticmethod
+    def _is_background_like_element(elem: ElementInfo, context: ProcessingContext) -> bool:
+        elem_type = elem.element_type.lower()
+        if elem_type in {'section_panel', 'title_bar', 'container', 'background', 'panel'}:
+            return True
+        canvas_area = max(1, int((context.canvas_width or 0) * (context.canvas_height or 0)))
+        return bool(elem.bbox and elem.bbox.area / canvas_area >= 0.12)
 
     @staticmethod
     def _export_pptx_direct(context: ProcessingContext, elements: List[ElementInfo], text_blocks: List[dict], output_dir: str, img_stem: str) -> Optional[str]:
