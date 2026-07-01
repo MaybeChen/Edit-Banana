@@ -37,7 +37,6 @@ from modules import (
     Sam3InfoExtractor,
     IconPictureProcessor,
     BasicShapeProcessor,
-    XMLMerger,
     MetricEvaluator,
     RefinementProcessor,
     VLMElementRefiner,
@@ -58,7 +57,6 @@ from modules import (
 # Prompt groups enum
 from modules.sam3_info_extractor import PromptGroup
 from modules.vlm_enhancer import VLMEnhancer
-from modules.text.xml_generator import MxGraphXMLGenerator
 
 # Text module available (depends on ocr/coord_processor etc.)
 TEXT_MODULE_AVAILABLE = TextRestorer is not None
@@ -105,7 +103,7 @@ def load_config() -> dict:
                 'timeout': 60,
                 'enabled': False,
                 'use_for': {
-                    'prompt_planning': False,
+                    'prompt_planning': True,
                     'text_style': True,
                     'segmentation_refine': True,
                     'element_refine': False,
@@ -119,7 +117,7 @@ def load_config() -> dict:
                     'region_refine_confidence': 0.70,
                     'layout_refine_confidence': 0.70,
                     'text_style_confidence': 0.65,
-                    'segmentation_refine_confidence': 0.70,
+                    'segmentation_refine_confidence': 0.65,
                     'element_attribute_confidence': 0.65,
                 },
             },
@@ -153,7 +151,7 @@ def load_config() -> dict:
 
 # ======================== pipeline ========================
 class Pipeline:
-    """Runs segmentation, text extraction, and XML merge (see README pipeline)."""
+    """Runs segmentation, text extraction, and direct PPTX export."""
 
     def __init__(self, config: dict = None):
         self.config = config or load_config()
@@ -161,7 +159,6 @@ class Pipeline:
         self._sam3_extractor = None
         self._icon_processor = None
         self._shape_processor = None
-        self._xml_merger = None
         self._metric_evaluator = None
         self._refinement_processor = None
         self._vlm_enhancer = None
@@ -221,12 +218,6 @@ class Pipeline:
         if self._shape_processor is None:
             self._shape_processor = BasicShapeProcessor()
         return self._shape_processor
-    
-    @property
-    def xml_merger(self) -> XMLMerger:
-        if self._xml_merger is None:
-            self._xml_merger = XMLMerger()
-        return self._xml_merger
     
     @property
     def metric_evaluator(self) -> MetricEvaluator:
@@ -331,7 +322,6 @@ class Pipeline:
                 text_style_path = os.path.join(img_output_dir, "vlm_text_result.json")
                 self._save_json(text_style_path, {"text_blocks": text_blocks, "changes": styled.get("changes", [])})
                 context.intermediate_results['vlm_text_result_json'] = text_style_path
-                context.intermediate_results['text_xml'] = self._generate_text_xml_from_blocks(image_path, text_blocks)
                 print(f"   VLM text styles: {styled.get('updated', 0)} updated")
                 print(f"   VLM text result: {text_style_path}")
 
@@ -389,20 +379,13 @@ class Pipeline:
             context.intermediate_results['vlm_element_attributes_json'] = attr_path
             print(f"   VLM element attributes: {attr_result.get('updated', 0)} updated")
 
-            print("\n[7] PPTX generation + VLM quality loop...")
+            print("\n[7] Direct PPTX generation + VLM quality loop...")
             pptx_path = None
             max_rounds = int((self.config.get("multimodal") or {}).get("max_quality_rounds", 3) or 3)
             quality_threshold = float((self.config.get("multimodal") or {}).get("quality_threshold", 90) or 90)
             for round_idx in range(1, max_rounds + 1):
-                self._reset_xml_fragments(context)
-                self._generate_xml_fragments(context)
-                merge_result = self.xml_merger.process(context)
-                if not merge_result.success:
-                    raise Exception(f"XML merge failed: {merge_result.error_message}")
-                temp_xml_path = merge_result.metadata.get('output_path')
-                pptx_path = self._export_pptx_from_xml(temp_xml_path)
-                if temp_xml_path and os.path.exists(temp_xml_path):
-                    os.remove(temp_xml_path)
+                pptx_elements = self._prepare_pptx_elements(context)
+                pptx_path = self._export_pptx_direct(context, pptx_elements, text_blocks, img_output_dir, img_stem)
                 context.intermediate_results['pptx_output'] = pptx_path
                 print(f"   Round {round_idx} PPTX: {pptx_path}")
                 validation = self.vlm_enhancer.validate_pptx_export(context, pptx_path, round_idx)
@@ -431,118 +414,73 @@ class Pipeline:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return path
 
-    def _generate_text_xml_from_blocks(self, image_path: str, text_blocks: List[dict]) -> str:
-        """Build text draw.io XML in memory from OCR/VLM-enriched text blocks."""
-        from PIL import Image
-        with Image.open(image_path) as img:
-            image_width, image_height = img.size
-        generator = MxGraphXMLGenerator(
-            diagram_name=Path(image_path).stem,
-            page_width=image_width,
-            page_height=image_height,
-        )
-        text_cells = []
-        for block in text_blocks:
-            geo = block.get("geometry", {})
-            text_cells.append(
-                generator.create_text_cell(
-                    text=block.get("text", ""),
-                    x=geo.get("x", 0),
-                    y=geo.get("y", 0),
-                    width=max(geo.get("width", 20), 20),
-                    height=max(geo.get("height", 10), 10),
-                    font_size=block.get("font_size", 12),
-                    is_latex=block.get("is_latex", False),
-                    rotation=geo.get("rotation", 0),
-                    font_weight=block.get("font_weight"),
-                    font_style=block.get("font_style"),
-                    font_color=block.get("font_color"),
-                    font_family=block.get("font_family"),
-                    is_bold=block.get("is_bold", False),
-                    is_italic=block.get("is_italic", False),
-                )
-            )
-        return generator.generate_xml(text_cells)
-
-    @staticmethod
-    def _reset_xml_fragments(context: ProcessingContext) -> None:
-        context.xml_fragments = []
+    def _prepare_pptx_elements(self, context: ProcessingContext) -> List[ElementInfo]:
+        """Prepare recognized elements for direct PPTX export."""
+        prepared = []
         for elem in context.elements:
-            elem.xml_fragment = None
-
-    @staticmethod
-    def _export_pptx_from_xml(xml_path: str) -> Optional[str]:
-        if not xml_path:
-            return None
-        from pptx_exporter import (
-            export_drawio_to_pptx,
-            is_pptx_export_available,
-            missing_pptx_dependency_message,
-        )
-        if not is_pptx_export_available():
-            print(f"   PPTX skipped: {missing_pptx_dependency_message()}")
-            return None
-        return export_drawio_to_pptx(xml_path)
-
-    def _generate_xml_fragments(self, context: ProcessingContext):
-        """Generate XML for elements that do not have one yet."""
-        for elem in context.elements:
-            if elem.has_xml():
-                continue
-            
             elem_type = elem.element_type.lower()
 
             if elem_type in {'arrow', 'line', 'connector'}:
                 if self._is_duplicate_line_fragment(elem, context.elements):
                     elem.processing_notes.append("Skipped duplicate line fragment contained by an arrow")
                     continue
-                elem.xml_fragment = self._generate_edge_xml(elem, context)
+                elem.arrow_start, elem.arrow_end = self._infer_edge_points(elem, context.elements)
+                if elem.line_style not in {"dashed", "dotted"} and self._edge_looks_dashed(elem, context):
+                    elem.line_style = "dashed"
                 elem.layer_level = LayerLevel.ARROW.value
-                continue
-            
-            if elem_type in {'icon', 'picture', 'logo', 'chart', 'function_graph'}:
-                # Image/icon: use base64 crop. Connectors are handled above as editable vectors.
-                if elem.base64:
-                    style = f"shape=image;imageAspect=0;aspect=fixed;verticalLabelPosition=bottom;verticalAlign=top;image=data:image/png,{elem.base64}"
-                else:
-                    style = "rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;"
-                elem.layer_level = LayerLevel.IMAGE.value
-                
-            elif elem_type in {'section_panel', 'title_bar'}:
-                # Background/container
-                fill = elem.fill_color or "#ffffff"
-                stroke = elem.stroke_color or "#000000"
-                stroke_width = max(1, int(elem.stroke_width or 1))
-                dashed = "dashed=1;dashPattern=3 3;" if elem.line_style in {"dashed", "dotted"} else ""
-                style = f"rounded=0;whiteSpace=wrap;html=1;fillColor={fill};strokeColor={stroke};strokeWidth={stroke_width};{dashed}"
+
+            elif self._is_background_like_element(elem, context):
+                # Large panels/frames are often detected by SAM3 as generic image or
+                # shape prompts. Export them as transparent background containers so
+                # their borders remain visible without covering inner content.
+                elem.element_type = "container"
+                elem.fill_color = "none"
+                elem.stroke_color = elem.stroke_color or "#000000"
+                elem.stroke_width = max(1, int(elem.stroke_width or 1))
                 elem.layer_level = LayerLevel.BACKGROUND.value
-                
+
+            elif elem_type in {'icon', 'picture', 'logo', 'chart', 'function_graph'}:
+                elem.layer_level = LayerLevel.IMAGE.value
+
             else:
-                # Basic shape
-                fill = elem.fill_color or "#ffffff"
-                stroke = elem.stroke_color or "#000000"
-                stroke_width = max(1, int(elem.stroke_width or 1))
-                dashed = "dashed=1;dashPattern=3 3;" if elem.line_style in {"dashed", "dotted"} else ""
-                common = f"whiteSpace=wrap;html=1;fillColor={fill};strokeColor={stroke};strokeWidth={stroke_width};{dashed}"
-                
-                if elem_type == 'rounded rectangle':
-                    arc = f"arcSize={int(elem.corner_radius)};" if elem.corner_radius is not None else ""
-                    style = f"rounded=1;{arc}{common}"
-                elif elem_type == 'diamond':
-                    style = f"rhombus;{common}"
-                elif elem_type in {'ellipse', 'circle'}:
-                    style = f"ellipse;{common}"
-                elif elem_type == 'cloud':
-                    style = f"ellipse;shape=cloud;{common}"
+                if elem_type in {"rectangle", "rounded rectangle", "rounded_rectangle", "container", "cylinder"}:
+                    elem.fill_color = "none"
                 else:
-                    style = f"rounded=0;{common}"
-                
+                    elem.fill_color = elem.fill_color or "#ffffff"
+                elem.stroke_color = elem.stroke_color or "#000000"
+                elem.stroke_width = max(1, int(elem.stroke_width or 1))
                 elem.layer_level = LayerLevel.BASIC_SHAPE.value
-            
-            # Build mxCell XML
-            elem.xml_fragment = f'''<mxCell id="{elem.id}" parent="1" vertex="1" value="" style="{style}">
-  <mxGeometry x="{elem.bbox.x1}" y="{elem.bbox.y1}" width="{elem.bbox.width}" height="{elem.bbox.height}" as="geometry"/>
-</mxCell>'''
+
+            prepared.append(elem)
+        return prepared
+
+
+    @staticmethod
+    def _is_background_like_element(elem: ElementInfo, context: ProcessingContext) -> bool:
+        elem_type = elem.element_type.lower()
+        if elem_type in {'section_panel', 'title_bar', 'container', 'background', 'panel'}:
+            return True
+        canvas_area = max(1, int((context.canvas_width or 0) * (context.canvas_height or 0)))
+        return bool(elem.bbox and elem.bbox.area / canvas_area >= 0.12)
+
+    @staticmethod
+    def _export_pptx_direct(context: ProcessingContext, elements: List[ElementInfo], text_blocks: List[dict], output_dir: str, img_stem: str) -> Optional[str]:
+        from pptx_exporter import (
+            export_elements_to_pptx,
+            is_pptx_export_available,
+            missing_pptx_dependency_message,
+        )
+        if not is_pptx_export_available():
+            print(f"   PPTX skipped: {missing_pptx_dependency_message()}")
+            return None
+        pptx_path = os.path.join(output_dir, f"{img_stem}.pptx")
+        return export_elements_to_pptx(
+            elements=elements,
+            text_blocks=text_blocks,
+            canvas_width=context.canvas_width,
+            canvas_height=context.canvas_height,
+            pptx_path=pptx_path,
+        )
 
     def _is_duplicate_line_fragment(self, elem, elements) -> bool:
         """Skip short line detections that are already part of an arrow mask."""
@@ -564,39 +502,11 @@ class Pipeline:
                 return True
         return False
 
-    def _generate_edge_xml(self, elem, context: ProcessingContext = None) -> str:
-        """Generate an editable draw.io edge for arrows/lines/connectors."""
-        elem_type = elem.element_type.lower()
-        start, end = self._infer_edge_points(elem, context.elements if context else None)
-        arrow_heads = elem.arrow_heads or ("end" if elem_type == "arrow" else "none")
-        start_arrow = "classic" if arrow_heads in {"start", "both"} else "none"
-        end_arrow = "classic" if arrow_heads in {"end", "both"} else "none"
-        dashed = elem.line_style in {"dashed", "dotted"} or self._edge_looks_dashed(elem, context)
-        dash_pattern = elem.dash_pattern or ("1 3" if elem.line_style == "dotted" else "3 3")
-        dash_style = f"dashed=1;dashPattern={dash_pattern};" if dashed else ""
-        stroke = elem.stroke_color or "#000000"
-        stroke_width = max(1, int(elem.stroke_width or 2))
-        style = (
-            "endArrow={};startArrow={};html=1;rounded=0;"
-            "strokeColor={};strokeWidth={};fillColor=none;{}"
-        ).format(end_arrow, start_arrow, stroke, stroke_width, dash_style)
-        elem.arrow_start = start
-        elem.arrow_end = end
-        source_attr = f' source="{elem.source_id}"' if elem.source_id is not None else ""
-        target_attr = f' target="{elem.target_id}"' if elem.target_id is not None else ""
-        return f'''<mxCell id="{elem.id}" parent="1" edge="1" value="" style="{style}"{source_attr}{target_attr}>
-  <mxGeometry relative="1" as="geometry">
-    <mxPoint x="{round(start[0], 2)}" y="{round(start[1], 2)}" as="sourcePoint"/>
-    <mxPoint x="{round(end[0], 2)}" y="{round(end[1], 2)}" as="targetPoint"/>
-  </mxGeometry>
-</mxCell>'''
-
-
     def _edge_looks_dashed(self, elem, context: ProcessingContext = None) -> bool:
         """Heuristically detect dashed/dotted connectors from the source crop.
 
         SAM3 only returns element type and geometry, so dashed source lines need a
-        lightweight pixel check before DrawIO/PPTX export. We sample the long axis
+        lightweight pixel check before PPTX export. We sample the long axis
         of thin line/connector detections and mark it dashed when ink occupancy is
         broken into several separated runs.
         """
@@ -641,20 +551,12 @@ class Pipeline:
             return False
 
     def _infer_edge_points(self, elem, elements=None) -> tuple:
-        """Infer connector endpoints, preferring VLM source/target direction when available.
+        """Infer connector endpoints from the arrow/line geometry.
 
-        SAM3 masks can flip arrow start/end when the arrowhead polygon is noisy.
-        When VLM supplies source_id/target_id, use those element boxes as the
-        directional truth: sourcePoint is placed on the source element boundary,
-        targetPoint is placed on the target element boundary. Geometry fallback is
-        still used when VLM relationship data is absent or incomplete.
+        Arrows are intentionally exported as coordinate-based edges instead of
+        binding to source/target elements. This avoids incorrect attachments when
+        relationship inference is noisy and preserves the source image geometry.
         """
-        if elements and elem.source_id is not None and elem.target_id is not None:
-            source = self._find_element_by_id(elements, elem.source_id)
-            target = self._find_element_by_id(elements, elem.target_id)
-            if source is not None and target is not None:
-                return self._bbox_connection_points(source.bbox, target.bbox)
-
         bbox = elem.bbox
         cx = (bbox.x1 + bbox.x2) / 2
         cy = (bbox.y1 + bbox.y2) / 2
@@ -674,38 +576,6 @@ class Pipeline:
         tip = self._find_sharpest_polygon_point(points)
         start = max(points, key=lambda p: (p[0] - tip[0]) ** 2 + (p[1] - tip[1]) ** 2)
         return start, tip
-
-    @staticmethod
-    def _find_element_by_id(elements, element_id):
-        for candidate in elements or []:
-            if candidate.id == element_id:
-                return candidate
-        return None
-
-    @staticmethod
-    def _bbox_connection_points(source_bbox, target_bbox) -> tuple:
-        """Return boundary points from source bbox toward target bbox and vice versa."""
-        sx, sy = source_bbox.center
-        tx, ty = target_bbox.center
-
-        def anchor(box, other_center):
-            cx, cy = box.center
-            ox, oy = other_center
-            dx = ox - cx
-            dy = oy - cy
-            half_w = max(1.0, box.width / 2)
-            half_h = max(1.0, box.height / 2)
-            if abs(dx) / half_w >= abs(dy) / half_h:
-                x = box.x2 if dx >= 0 else box.x1
-                y = cy + dy * (half_w / max(abs(dx), 1.0))
-                y = max(box.y1, min(box.y2, y))
-            else:
-                y = box.y2 if dy >= 0 else box.y1
-                x = cx + dx * (half_h / max(abs(dy), 1.0))
-                x = max(box.x1, min(box.x2, x))
-            return (float(x), float(y))
-
-        return anchor(source_bbox, (tx, ty)), anchor(target_bbox, (sx, sy))
 
     def _find_sharpest_polygon_point(self, points):
         """Find the most likely arrow head tip as the sharpest polygon vertex."""

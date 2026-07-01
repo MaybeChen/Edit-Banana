@@ -1,21 +1,22 @@
-"""Export merged draw.io XML fragments to a single-slide PowerPoint deck.
+"""Export recognized diagram elements directly to a single-slide PowerPoint deck.
 
-The exporter intentionally covers the subset this project emits: images, basic
-shapes, text boxes, and straight edges. It keeps the output editable where the
-source draw.io element is editable, and embeds raster crops as pictures.
+The exporter consumes the pipeline's element records and OCR text blocks directly.
+Editable shapes, text boxes, and straight connectors are emitted as native
+PowerPoint objects, while raster icon/picture crops are embedded as images.
 """
 
 import base64
-import html
 import importlib.util
 import io
-import re
-import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 EMU_PER_PX = 9525  # PowerPoint uses EMUs; 96dpi pixel -> 914400 / 96.
+
+
+CONNECTOR_TYPES = {"arrow", "line", "connector"}
+IMAGE_TYPES = {"icon", "picture", "logo", "chart", "function_graph"}
 
 
 def is_pptx_export_available() -> bool:
@@ -28,13 +29,17 @@ def missing_pptx_dependency_message() -> str:
     return "PPTX export requires python-pptx. Install it with: pip install python-pptx>=1.0.2"
 
 
-def export_drawio_to_pptx(drawio_xml_path: str, pptx_path: Optional[str] = None) -> str:
-    """Create a PPTX file from a merged draw.io XML file and return its path."""
+def export_elements_to_pptx(
+    elements: Sequence[Any],
+    text_blocks: Optional[Sequence[Dict[str, Any]]],
+    canvas_width: int,
+    canvas_height: int,
+    pptx_path: str,
+) -> str:
+    """Create a PPTX directly from recognized elements and OCR text blocks."""
     if not is_pptx_export_available():
         raise RuntimeError(missing_pptx_dependency_message())
 
-    # Imported lazily so the rest of the pipeline can still be used by tooling that
-    # only performs syntax checks. `python-pptx` is listed in requirements.txt.
     from pptx import Presentation
     from pptx.dml.color import RGBColor
     from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE, MSO_CONNECTOR
@@ -42,119 +47,158 @@ def export_drawio_to_pptx(drawio_xml_path: str, pptx_path: Optional[str] = None)
     from pptx.oxml.xmlchemy import OxmlElement
     from pptx.util import Emu, Pt
 
-    drawio_path = Path(drawio_xml_path)
-    pptx_path = Path(pptx_path) if pptx_path else drawio_path.with_suffix(".pptx")
-
-    tree = ET.parse(drawio_path)
-    root = tree.getroot()
-    graph = root.find(".//mxGraphModel")
-    if graph is None:
-        raise ValueError(f"No mxGraphModel found in {drawio_xml_path}")
-
-    page_width = float(graph.get("pageWidth", 1280))
-    page_height = float(graph.get("pageHeight", 720))
-
     prs = Presentation()
-    prs.slide_width = Emu(page_width * EMU_PER_PX)
-    prs.slide_height = Emu(page_height * EMU_PER_PX)
+    prs.slide_width = Emu(float(canvas_width or 1280) * EMU_PER_PX)
+    prs.slide_height = Emu(float(canvas_height or 720) * EMU_PER_PX)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
-    for cell in root.iter("mxCell"):
-        if cell.get("id") in {"0", "1"}:
-            continue
-        geometry = cell.find("mxGeometry")
-        if geometry is None:
-            continue
-        style = _parse_style(cell.get("style", ""))
-        if cell.get("edge") == "1":
-            _add_edge(slide, geometry, style, MSO_CONNECTOR, RGBColor, Pt, OxmlElement)
-        elif "image" in style:
-            _add_image(slide, geometry, style, Emu)
-        elif (cell.get("value") or "").strip() or style.get("text") is True:
-            _add_text(slide, cell, geometry, style, Emu, Pt, RGBColor, MSO_VERTICAL_ANCHOR, PP_ALIGN)
-        elif cell.get("vertex") == "1":
-            _add_shape(slide, geometry, style, MSO_AUTO_SHAPE_TYPE, Emu, Pt, RGBColor)
-
-    pptx_path.parent.mkdir(parents=True, exist_ok=True)
-    prs.save(pptx_path)
-    return str(pptx_path)
-
-
-def _parse_style(style: str) -> Dict[str, object]:
-    parsed: Dict[str, object] = {}
-    for part in style.split(";"):
-        if not part:
-            continue
-        if "=" in part:
-            key, value = part.split("=", 1)
-            parsed[key] = value
+    for elem in _sort_elements(elements):
+        elem_type = str(getattr(elem, "element_type", "") or "").lower()
+        if elem_type in CONNECTOR_TYPES:
+            _add_connector_from_element(slide, elem, MSO_CONNECTOR, RGBColor, Pt, OxmlElement)
+        elif elem_type in IMAGE_TYPES:
+            if getattr(elem, "base64", None):
+                _add_image_from_element(slide, elem, Emu)
+            elif int(getattr(elem, "layer_level", 5) or 5) == 0:
+                _add_shape_from_element(slide, elem, MSO_AUTO_SHAPE_TYPE, Emu, Pt, RGBColor)
         else:
-            parsed[part] = True
-    return parsed
+            _add_shape_from_element(slide, elem, MSO_AUTO_SHAPE_TYPE, Emu, Pt, RGBColor)
+
+    for block in text_blocks or []:
+        _add_text_block(slide, block, Emu, Pt, RGBColor, MSO_VERTICAL_ANCHOR, PP_ALIGN)
+
+    output_path = Path(pptx_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    prs.save(output_path)
+    return str(output_path)
 
 
-def _geometry_rect(geometry: ET.Element) -> Tuple[float, float, float, float]:
-    return (
-        float(geometry.get("x", 0)),
-        float(geometry.get("y", 0)),
-        float(geometry.get("width", 0)),
-        float(geometry.get("height", 0)),
-    )
+def _sort_elements(elements: Sequence[Any]) -> List[Any]:
+    def sort_key(elem: Any) -> Tuple[int, int]:
+        layer = int(getattr(elem, "layer_level", 5) or 5)
+        bbox = getattr(elem, "bbox", None)
+        area = int(getattr(bbox, "area", 0) or 0)
+        return layer, -area
+
+    return sorted(elements or [], key=sort_key)
 
 
 def _emu(value: float, Emu):
-    return Emu(value * EMU_PER_PX)
+    return Emu(float(value) * EMU_PER_PX)
 
 
 def _rgb(color: Optional[str], RGBColor):
-    if not color or color == "none" or not color.startswith("#") or len(color) != 7:
+    if not color or color == "none" or not str(color).startswith("#") or len(str(color)) != 7:
         return None
-    return RGBColor(int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
+    text = str(color)
+    return RGBColor(int(text[1:3], 16), int(text[3:5], 16), int(text[5:7], 16))
 
 
-def _add_image(slide, geometry: ET.Element, style: Dict[str, object], Emu) -> None:
-    image_ref = str(style.get("image", ""))
-    match = re.match(r"data:image/[^,]+,(.+)", image_ref)
-    if not match:
+def _shape_type(elem_type: str, MSO_AUTO_SHAPE_TYPE):
+    normalized = elem_type.replace("_", " ")
+    if normalized == "rounded rectangle":
+        return MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE
+    mapping = {
+        "ellipse": "OVAL",
+        "circle": "OVAL",
+        "cylinder": "CAN",
+        "database": "CAN",
+        "diamond": "DIAMOND",
+        "triangle": "TRIANGLE",
+        "hexagon": "HEXAGON",
+        "parallelogram": "PARALLELOGRAM",
+        "cloud": "CLOUD",
+    }
+    shape_name = mapping.get(normalized, "RECTANGLE")
+    return getattr(MSO_AUTO_SHAPE_TYPE, shape_name, MSO_AUTO_SHAPE_TYPE.RECTANGLE)
+
+
+def _add_shape_from_element(slide, elem: Any, MSO_AUTO_SHAPE_TYPE, Emu, Pt, RGBColor) -> None:
+    bbox = getattr(elem, "bbox", None)
+    if bbox is None or getattr(bbox, "width", 0) <= 0 or getattr(bbox, "height", 0) <= 0:
         return
-    x, y, w, h = _geometry_rect(geometry)
-    image_bytes = base64.b64decode(match.group(1))
-    slide.shapes.add_picture(io.BytesIO(image_bytes), _emu(x, Emu), _emu(y, Emu), _emu(w, Emu), _emu(h, Emu))
+    elem_type = str(getattr(elem, "element_type", "rectangle") or "rectangle").lower()
+    shape = slide.shapes.add_shape(
+        _shape_type(elem_type, MSO_AUTO_SHAPE_TYPE),
+        _emu(getattr(bbox, "x1", 0), Emu),
+        _emu(getattr(bbox, "y1", 0), Emu),
+        _emu(getattr(bbox, "width", 0), Emu),
+        _emu(getattr(bbox, "height", 0), Emu),
+    )
 
-
-def _add_shape(slide, geometry: ET.Element, style: Dict[str, object], MSO_AUTO_SHAPE_TYPE, Emu, Pt, RGBColor) -> None:
-    x, y, w, h = _geometry_rect(geometry)
-    shape_type = MSO_AUTO_SHAPE_TYPE.RECTANGLE
-    shape_name = str(style.get("shape", ""))
-    if style.get("rounded") == "1":
-        shape_type = MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE
-    if "ellipse" in style or shape_name in {"ellipse", "cloud"}:
-        shape_type = MSO_AUTO_SHAPE_TYPE.OVAL
-    if shape_name in {"cylinder", "cylinder3", "database"}:
-        shape_type = getattr(MSO_AUTO_SHAPE_TYPE, "CAN", shape_type)
-
-    shape = slide.shapes.add_shape(shape_type, _emu(x, Emu), _emu(y, Emu), _emu(w, Emu), _emu(h, Emu))
-    fill_color = _rgb(str(style.get("fillColor", "#ffffff")), RGBColor)
-    if fill_color is None:
+    fill = _rgb(getattr(elem, "fill_color", None) or "#ffffff", RGBColor)
+    if fill is None:
         shape.fill.background()
     else:
         shape.fill.solid()
-        shape.fill.fore_color.rgb = fill_color
+        shape.fill.fore_color.rgb = fill
 
-    stroke_color = _rgb(str(style.get("strokeColor", "#000000")), RGBColor)
-    if stroke_color is None:
+    stroke = _rgb(getattr(elem, "stroke_color", None) or "#000000", RGBColor)
+    if stroke is None:
         shape.line.fill.background()
     else:
-        shape.line.color.rgb = stroke_color
-        shape.line.width = Pt(float(style.get("strokeWidth", 1)))
+        shape.line.color.rgb = stroke
+        shape.line.width = Pt(float(getattr(elem, "stroke_width", 1) or 1))
 
 
-def _add_text(
-    slide, cell: ET.Element, geometry: ET.Element, style: Dict[str, object],
-    Emu, Pt, RGBColor, MSO_VERTICAL_ANCHOR, PP_ALIGN
-) -> None:
-    x, y, w, h = _geometry_rect(geometry)
-    textbox = slide.shapes.add_textbox(_emu(x, Emu), _emu(y, Emu), _emu(w, Emu), _emu(h, Emu))
+def _add_image_from_element(slide, elem: Any, Emu) -> None:
+    bbox = getattr(elem, "bbox", None)
+    image_data = getattr(elem, "base64", None)
+    if bbox is None or not image_data:
+        return
+    image_bytes = base64.b64decode(image_data)
+    slide.shapes.add_picture(
+        io.BytesIO(image_bytes),
+        _emu(getattr(bbox, "x1", 0), Emu),
+        _emu(getattr(bbox, "y1", 0), Emu),
+        _emu(getattr(bbox, "width", 0), Emu),
+        _emu(getattr(bbox, "height", 0), Emu),
+    )
+
+
+def _add_connector_from_element(slide, elem: Any, MSO_CONNECTOR, RGBColor, Pt, OxmlElement) -> None:
+    start, end = _connector_points(elem)
+    if start is None or end is None:
+        return
+    connector = slide.shapes.add_connector(
+        MSO_CONNECTOR.STRAIGHT,
+        int(float(start[0]) * EMU_PER_PX),
+        int(float(start[1]) * EMU_PER_PX),
+        int(float(end[0]) * EMU_PER_PX),
+        int(float(end[1]) * EMU_PER_PX),
+    )
+    stroke = _rgb(getattr(elem, "stroke_color", None) or "#000000", RGBColor)
+    if stroke is not None:
+        connector.line.color.rgb = stroke
+    connector.line.width = Pt(float(getattr(elem, "stroke_width", 2) or 2))
+    if getattr(elem, "line_style", None) in {"dashed", "dotted"} or getattr(elem, "dash_pattern", None):
+        _apply_connector_dash(connector, OxmlElement)
+    _apply_connector_arrowheads(connector, getattr(elem, "arrow_heads", None), getattr(elem, "element_type", ""), OxmlElement)
+
+
+def _connector_points(elem: Any) -> Tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]:
+    start = getattr(elem, "arrow_start", None)
+    end = getattr(elem, "arrow_end", None)
+    if start and end:
+        return start, end
+
+    bbox = getattr(elem, "bbox", None)
+    if bbox is None:
+        return None, None
+    cx = (getattr(bbox, "x1", 0) + getattr(bbox, "x2", 0)) / 2
+    cy = (getattr(bbox, "y1", 0) + getattr(bbox, "y2", 0)) / 2
+    if getattr(bbox, "width", 0) >= getattr(bbox, "height", 0):
+        return (float(getattr(bbox, "x1", 0)), float(cy)), (float(getattr(bbox, "x2", 0)), float(cy))
+    return (float(cx), float(getattr(bbox, "y1", 0))), (float(cx), float(getattr(bbox, "y2", 0)))
+
+
+def _add_text_block(slide, block: Dict[str, Any], Emu, Pt, RGBColor, MSO_VERTICAL_ANCHOR, PP_ALIGN) -> None:
+    geo = block.get("geometry") or {}
+    x = float(geo.get("x", 0))
+    y = float(geo.get("y", 0))
+    width = max(float(geo.get("width", 20)), 20.0)
+    height = max(float(geo.get("height", 10)), 10.0)
+    textbox = slide.shapes.add_textbox(_emu(x, Emu), _emu(y, Emu), _emu(width, Emu), _emu(height, Emu))
     frame = textbox.text_frame
     frame.clear()
     frame.margin_left = 0
@@ -162,61 +206,22 @@ def _add_text(
     frame.margin_top = 0
     frame.margin_bottom = 0
     frame.vertical_anchor = MSO_VERTICAL_ANCHOR.MIDDLE
-    frame.word_wrap = str(style.get("whiteSpace", "wrap")) != "nowrap"
+    frame.word_wrap = True
     paragraph = frame.paragraphs[0]
-    align = str(style.get("align", "center"))
-    if align == "left":
-        paragraph.alignment = PP_ALIGN.LEFT
-    elif align == "right":
-        paragraph.alignment = PP_ALIGN.RIGHT
-    else:
-        paragraph.alignment = PP_ALIGN.CENTER
+    paragraph.alignment = PP_ALIGN.CENTER
     run = paragraph.add_run()
-    run.text = _clean_text(cell.get("value", ""))
-    run.font.size = Pt(float(style.get("fontSize", 12)))
-    font_style = str(style.get("fontStyle", "0"))
-    try:
-        font_style_value = int(font_style)
-    except ValueError:
-        font_style_value = 0
-    run.font.bold = bool(font_style_value & 1)
-    run.font.italic = bool(font_style_value & 2)
-    font_color = _rgb(str(style.get("fontColor", "#000000")), RGBColor)
+    run.text = str(block.get("text", ""))
+    run.font.size = Pt(float(block.get("font_size", 12) or 12))
+    run.font.bold = bool(block.get("is_bold") or str(block.get("font_weight", "")).lower() == "bold")
+    run.font.italic = bool(block.get("is_italic") or str(block.get("font_style", "")).lower() == "italic")
+    font_color = _rgb(block.get("font_color") or "#000000", RGBColor)
     if font_color is not None:
         run.font.color.rgb = font_color
-    if style.get("fontFamily"):
-        run.font.name = str(style["fontFamily"])
+    if block.get("font_family"):
+        run.font.name = str(block["font_family"])
 
 
-def _add_edge(slide, geometry: ET.Element, style: Dict[str, object], MSO_CONNECTOR, RGBColor, Pt, OxmlElement) -> None:
-    points = {p.get("as"): p for p in geometry.iter("mxPoint")}
-    source = points.get("sourcePoint")
-    target = points.get("targetPoint")
-    if source is None or target is None:
-        return
-    x1, y1 = float(source.get("x", 0)), float(source.get("y", 0))
-    x2, y2 = float(target.get("x", 0)), float(target.get("y", 0))
-    connector = slide.shapes.add_connector(
-        MSO_CONNECTOR.STRAIGHT,
-        int(x1 * EMU_PER_PX),
-        int(y1 * EMU_PER_PX),
-        int(x2 * EMU_PER_PX),
-        int(y2 * EMU_PER_PX),
-    )
-    stroke_color = _rgb(str(style.get("strokeColor", "#000000")), RGBColor)
-    if stroke_color is not None:
-        connector.line.color.rgb = stroke_color
-    connector.line.width = Pt(float(style.get("strokeWidth", 1)))
-    _apply_connector_dash(connector, style, OxmlElement)
-    _apply_connector_arrowheads(connector, style, OxmlElement)
-
-
-
-def _apply_connector_dash(connector, style: Dict[str, object], OxmlElement) -> None:
-    """Apply draw.io dashed connector styles to PowerPoint DrawingML."""
-    dashed = str(style.get("dashed", "0")) == "1" or "dashPattern" in style
-    if not dashed:
-        return
+def _apply_connector_dash(connector, OxmlElement) -> None:
     line = connector._element.spPr.get_or_add_ln()
     for child in list(line):
         if child.tag.endswith("}prstDash"):
@@ -225,25 +230,17 @@ def _apply_connector_dash(connector, style: Dict[str, object], OxmlElement) -> N
     dash.set("val", "dash")
     line.append(dash)
 
-def _apply_connector_arrowheads(connector, style: Dict[str, object], OxmlElement) -> None:
-    """Add PowerPoint arrowhead XML for draw.io edge styles."""
-    start_arrow = str(style.get("startArrow", "none"))
-    end_arrow = str(style.get("endArrow", "none"))
-    if start_arrow == "none" and end_arrow == "none":
-        return
 
+def _apply_connector_arrowheads(connector, arrow_heads: Optional[str], elem_type: str, OxmlElement) -> None:
+    heads = str(arrow_heads or ("end" if str(elem_type).lower() == "arrow" else "none")).lower()
+    if heads in {"none", "null", ""}:
+        return
     line = connector._element.spPr.get_or_add_ln()
-    if start_arrow != "none":
+    if heads in {"start", "both"}:
         head = OxmlElement("a:headEnd")
         head.set("type", "triangle")
         line.append(head)
-    if end_arrow != "none":
+    if heads in {"end", "both"}:
         tail = OxmlElement("a:tailEnd")
         tail.set("type", "triangle")
         line.append(tail)
-
-
-def _clean_text(value: str) -> str:
-    text = html.unescape(value or "")
-    text = re.sub(r"<[^>]+>", "", text)
-    return text

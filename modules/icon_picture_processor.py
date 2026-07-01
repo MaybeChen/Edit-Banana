@@ -16,7 +16,6 @@ Usage:
 import os
 import io
 import base64
-import xml.etree.ElementTree as ET
 from typing import Optional, List
 from PIL import Image
 import numpy as np
@@ -489,28 +488,19 @@ class IconPictureProcessor(BaseProcessor):
 
     def _extract_text_bboxes(self, context: ProcessingContext) -> List[List[int]]:
         """Extract OCR text boxes so raster icon crops can yield to editable text."""
-        text_xml = getattr(context, "intermediate_results", {}).get("text_xml") if context else None
-        if not text_xml:
+        if not context:
             return []
 
         bboxes: List[List[int]] = []
-        try:
-            root = ET.fromstring(text_xml)
-            for cell in root.iter("mxCell"):
-                if not (cell.get("value") or "").strip():
-                    continue
-                geometry = cell.find("mxGeometry")
-                if geometry is None:
-                    continue
-                x = float(geometry.get("x", 0))
-                y = float(geometry.get("y", 0))
-                w = float(geometry.get("width", 0))
-                h = float(geometry.get("height", 0))
-                if w <= 0 or h <= 0:
-                    continue
+        text_blocks = getattr(context, "intermediate_results", {}).get("ocr_text_blocks") or []
+        for block in text_blocks:
+            geo = block.get("geometry") or {}
+            x = float(geo.get("x", 0))
+            y = float(geo.get("y", 0))
+            w = float(geo.get("width", 0))
+            h = float(geo.get("height", 0))
+            if w > 0 and h > 0:
                 bboxes.append([int(x), int(y), int(x + w), int(y + h)])
-        except Exception as exc:
-            self._log(f"Failed to extract OCR text boxes for image cutouts: {exc}")
         return bboxes
 
     def _apply_text_cutouts(self, image: Image.Image, crop_box: tuple, text_bboxes: List[List[int]]) -> Image.Image:
