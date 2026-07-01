@@ -9,10 +9,11 @@ sam3:
   score_threshold: 0.5
   epsilon_factor: 0.02
   min_area: 100
-  # When enabled, ask the configured VLM to generate image-specific SAM3 prompts
-  # and merge them with the default prompt groups before extraction.
-  use_vlm_prompts: false
-  vlm_prompt_max_per_group: 8
+  # When multimodal.enabled and use_for.prompt_planning are both enabled, ask the
+  # configured VLM to generate image-specific SAM3 prompts and merge them with
+  # the default prompt groups before extraction.
+  use_vlm_prompts: true
+  vlm_prompt_max_per_group: 6
 
 # Prompt groups: prompts default to prompts/*.py; prompts below are merged with defaults unless replace_default_prompts is true.
 prompt_groups:
@@ -44,8 +45,8 @@ prompt_groups:
       - dashed connector line
       - dotted connector line
       - line connecting diagram nodes
-    score_threshold: 0.45
-    min_area: 50
+    score_threshold: 0.40
+    min_area: 40
     priority: 4
   shape:
     name: shape
@@ -65,7 +66,7 @@ prompt_groups:
       - triangle shape
       - hexagon shape
     score_threshold: 0.5
-    min_area: 200
+    min_area: 150
     priority: 3
   background:
     name: background
@@ -78,7 +79,7 @@ prompt_groups:
       - background frame
       - diagram boundary box
     score_threshold: 0.25
-    min_area: 500
+    min_area: 400
     priority: 1
 
 # Text OCR engine: tesseract (system) or paddleocr (better mixed CN/EN)
@@ -148,7 +149,7 @@ multimodal:
   # Force SAM3 back to coarse recall prompts; VLM/CV fill detailed attributes later.
   coarse_sam_prompts: true
   use_for:
-    prompt_planning: false       # New flow keeps SAM3 prompts coarse by default; enable only to add image-specific coarse prompts.
+    prompt_planning: true        # Add image-specific coarse prompts when multimodal.enabled is true.
     text_style: true             # Enrich PaddleOCR text blocks with font family/size/color/style.
     segmentation_refine: true    # Add/correct coarse SAM3 objects before attribute enrichment.
     element_refine: false        # Legacy type/line-style correction pass; superseded by segmentation_refine + element_attributes.
@@ -163,7 +164,7 @@ multimodal:
     region_refine_confidence: 0.70
     layout_refine_confidence: 0.70
     text_style_confidence: 0.65
-    segmentation_refine_confidence: 0.70
+    segmentation_refine_confidence: 0.65
     element_attribute_confidence: 0.65
   ca_cert_path: false
   proxy: ""
