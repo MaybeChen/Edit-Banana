@@ -50,6 +50,7 @@ from modules import (
     ProcessingContext,
     ProcessingResult,
     ElementInfo,
+    BoundingBox,
     LayerLevel,
     get_layer_level,
 )
@@ -421,13 +422,25 @@ class Pipeline:
             elem_type = elem.element_type.lower()
 
             if elem_type in {'arrow', 'line', 'connector'}:
-                if self._is_duplicate_line_fragment(elem, context.elements):
-                    elem.processing_notes.append("Skipped duplicate line fragment contained by an arrow")
-                    continue
-                elem.arrow_start, elem.arrow_end = self._infer_edge_points(elem, context.elements)
-                if elem.line_style not in {"dashed", "dotted"} and self._edge_looks_dashed(elem, context):
-                    elem.line_style = "dashed"
-                elem.layer_level = LayerLevel.ARROW.value
+                if self._is_border_like_connector(elem, context):
+                    elem.element_type = "container"
+                    elem.fill_color = "none"
+                    elem.stroke_color = elem.stroke_color or "#000000"
+                    elem.stroke_width = max(1, int(elem.stroke_width or 1))
+                    elem.layer_level = LayerLevel.BACKGROUND.value
+                else:
+                    if self._is_duplicate_line_fragment(elem, context.elements):
+                        elem.processing_notes.append("Skipped duplicate line fragment contained by an arrow")
+                        continue
+                    elem.arrow_start, elem.arrow_end = self._infer_edge_points(elem, context.elements)
+                    inferred_heads = self._infer_arrow_heads_from_polygon(elem)
+                    if inferred_heads and elem.arrow_heads in {None, "none"}:
+                        elem.arrow_heads = inferred_heads
+                    if elem.line_style not in {"dashed", "dotted"} and self._edge_looks_dashed(elem, context):
+                        elem.line_style = "dashed"
+                    if self._edge_looks_curved(elem):
+                        elem.arrow_style = "curved"
+                    elem.layer_level = LayerLevel.ARROW.value
 
             elif self._is_background_like_element(elem, context):
                 # Large panels/frames are often detected by SAM3 as generic image or
@@ -452,8 +465,180 @@ class Pipeline:
                 elem.layer_level = LayerLevel.BASIC_SHAPE.value
 
             prepared.append(elem)
+
+        prepared.extend(self._detect_missing_divider_lines(context, prepared))
         return prepared
 
+
+
+    @staticmethod
+    def _is_border_like_connector(elem: ElementInfo, context: ProcessingContext) -> bool:
+        """Detect connector candidates that are actually container/panel borders."""
+        elem_type = elem.element_type.lower()
+        if elem_type not in {"connector", "line"}:
+            return False
+        if elem.arrow_heads not in {None, "none"}:
+            return False
+        if not elem.bbox:
+            return False
+        canvas_area = max(1, int((context.canvas_width or 0) * (context.canvas_height or 0)))
+        area_ratio = elem.bbox.area / canvas_area
+        # A true connector is usually thin. A large two-dimensional connector box is
+        # typically a misclassified frame/container boundary, such as a grouped panel.
+        return bool(elem.bbox.width >= 40 and elem.bbox.height >= 40 and area_ratio >= 0.025)
+
+    @staticmethod
+    def _edge_looks_curved(elem: ElementInfo) -> bool:
+        if elem.element_type.lower() not in {"arrow", "connector", "line"} or not elem.polygon:
+            return False
+        if not elem.bbox or min(elem.bbox.width, elem.bbox.height) < 20:
+            return False
+        return len(elem.polygon) >= 5
+
+    def _infer_arrow_heads_from_polygon(self, elem: ElementInfo) -> Optional[str]:
+        """Infer start/end/both arrowheads from sharp polygon tips near endpoints."""
+        if elem.element_type.lower() not in {"arrow", "connector", "line"} or not elem.polygon:
+            return None
+        if not elem.arrow_start or not elem.arrow_end:
+            return None
+        points = [(float(p[0]), float(p[1])) for p in elem.polygon if len(p) >= 2]
+        if len(points) < 4:
+            return None
+
+        sharp_points = []
+        for point in points:
+            angle = self._polygon_angle_at_point(points, point)
+            if angle is not None and angle <= 75:
+                sharp_points.append(point)
+        if not sharp_points:
+            return None
+
+        def near(candidate, endpoint):
+            import math
+            tolerance = max(10.0, min(elem.bbox.width, elem.bbox.height) * 0.35)
+            return math.hypot(candidate[0] - endpoint[0], candidate[1] - endpoint[1]) <= tolerance
+
+        start_has = any(near(point, elem.arrow_start) for point in sharp_points)
+        end_has = any(near(point, elem.arrow_end) for point in sharp_points)
+        if start_has and end_has:
+            return "both"
+        if start_has:
+            return "start"
+        if end_has:
+            return "end"
+        return None
+
+    @staticmethod
+    def _polygon_angle_at_point(points, point) -> Optional[float]:
+        import math
+        try:
+            idx = points.index(point)
+        except ValueError:
+            return None
+        prev_p = points[(idx - 1) % len(points)]
+        next_p = points[(idx + 1) % len(points)]
+        v1 = (prev_p[0] - point[0], prev_p[1] - point[1])
+        v2 = (next_p[0] - point[0], next_p[1] - point[1])
+        len1 = math.hypot(*v1)
+        len2 = math.hypot(*v2)
+        if len1 <= 0 or len2 <= 0:
+            return None
+        cos_a = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (len1 * len2)))
+        return math.degrees(math.acos(cos_a))
+
+    def _detect_missing_divider_lines(self, context: ProcessingContext, existing_elements: List[ElementInfo]) -> List[ElementInfo]:
+        """Use lightweight image analysis to recover long horizontal divider lines."""
+        if not context.image_path:
+            return []
+        from PIL import Image
+        import numpy as np
+        with Image.open(context.image_path) as img:
+            gray = np.array(img.convert("L"))
+
+        dark = gray < 110
+        height, width = dark.shape
+        candidates = []
+        for y in range(height):
+            if y < 8 or y > height - 8:
+                continue
+            xs = np.flatnonzero(dark[y])
+            if len(xs) < width * 0.35:
+                continue
+            runs = self._continuous_runs(xs)
+            for x1, x2 in runs:
+                if x2 - x1 >= width * 0.35:
+                    candidates.append((x1, y, x2, y + 1))
+
+        merged = self._merge_horizontal_line_candidates(candidates)
+        new_elements = []
+        next_id = max([e.id for e in existing_elements], default=-1) + 1
+        for x1, y1, x2, y2 in merged:
+            if self._overlaps_existing_line([x1, y1, x2, y2], existing_elements):
+                continue
+            elem = ElementInfo(
+                id=next_id + len(new_elements),
+                element_type="line",
+                bbox=BoundingBox(int(x1), int(y1), int(x2), int(max(y2, y1 + 2))),
+                score=0.8,
+                source_prompt="cv_horizontal_divider",
+                stroke_color="#000000",
+                stroke_width=1,
+                line_style="solid",
+                layer_level=LayerLevel.ARROW.value,
+            )
+            cy = (elem.bbox.y1 + elem.bbox.y2) / 2
+            elem.arrow_start = (elem.bbox.x1, cy)
+            elem.arrow_end = (elem.bbox.x2, cy)
+            elem.arrow_heads = "none"
+            elem.processing_notes.append("cv_horizontal_divider:add")
+            new_elements.append(elem)
+        return new_elements
+
+    @staticmethod
+    def _continuous_runs(indices):
+        runs = []
+        start = int(indices[0]) if len(indices) else 0
+        prev = start
+        for value in indices[1:]:
+            value = int(value)
+            if value > prev + 1:
+                runs.append((start, prev + 1))
+                start = value
+            prev = value
+        if len(indices):
+            runs.append((start, prev + 1))
+        return runs
+
+    @staticmethod
+    def _merge_horizontal_line_candidates(candidates):
+        if not candidates:
+            return []
+        candidates = sorted(candidates, key=lambda box: (box[1], box[0]))
+        merged = []
+        for box in candidates:
+            x1, y1, x2, y2 = box
+            if not merged or y1 - merged[-1][3] > 2 or x1 > merged[-1][2] + 8:
+                merged.append([x1, y1, x2, y2])
+            else:
+                merged[-1][0] = min(merged[-1][0], x1)
+                merged[-1][1] = min(merged[-1][1], y1)
+                merged[-1][2] = max(merged[-1][2], x2)
+                merged[-1][3] = max(merged[-1][3], y2)
+        return merged
+
+    @staticmethod
+    def _overlaps_existing_line(box, elements) -> bool:
+        x1, y1, x2, y2 = box
+        for elem in elements:
+            if elem.element_type.lower() not in {"line", "connector", "arrow"}:
+                continue
+            bx1, by1, bx2, by2 = elem.bbox.to_list()
+            if x2 <= bx1 or bx2 <= x1 or y2 <= by1 or by2 <= y1:
+                continue
+            inter = (min(x2, bx2) - max(x1, bx1)) * (min(y2, by2) - max(y1, by1))
+            if inter / max(1, (x2 - x1) * max(1, y2 - y1)) > 0.5:
+                return True
+        return False
 
     @staticmethod
     def _is_background_like_element(elem: ElementInfo, context: ProcessingContext) -> bool:

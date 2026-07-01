@@ -160,8 +160,9 @@ def _add_connector_from_element(slide, elem: Any, MSO_CONNECTOR, RGBColor, Pt, O
     start, end = _connector_points(elem)
     if start is None or end is None:
         return
+    connector_type = MSO_CONNECTOR.CURVE if str(getattr(elem, "arrow_style", "")).lower() == "curved" else MSO_CONNECTOR.STRAIGHT
     connector = slide.shapes.add_connector(
-        MSO_CONNECTOR.STRAIGHT,
+        connector_type,
         int(float(start[0]) * EMU_PER_PX),
         int(float(start[1]) * EMU_PER_PX),
         int(float(end[0]) * EMU_PER_PX),
