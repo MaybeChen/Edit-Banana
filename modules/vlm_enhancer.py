@@ -81,6 +81,13 @@ class VLMEnhancer:
                     content = message.get("content")
                     if isinstance(content, str):
                         return content
+                    if isinstance(content, list):
+                        parts = []
+                        for part in content:
+                            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                                parts.append(part["text"])
+                        if parts:
+                            return "\n".join(parts)
                 text = choices[0].get("text") if isinstance(choices[0], dict) else None
                 if isinstance(text, str):
                     return text
@@ -91,12 +98,9 @@ class VLMEnhancer:
     @classmethod
     def _parse_json_response(cls, response: Any) -> Dict[str, Any]:
         """Parse JSON returned by VLM, including fenced Markdown JSON."""
-        text = cls._extract_response_text(response).strip()
+        text = cls._normalize_json_text(cls._extract_response_text(response))
         if not text:
             return {}
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-            text = re.sub(r"\s*```$", "", text)
         try:
             parsed = json.loads(text)
             return parsed if isinstance(parsed, dict) else {}
@@ -129,12 +133,9 @@ class VLMEnhancer:
     @classmethod
     def _parse_and_coerce_stage_json(cls, text: str, stage: str) -> Dict[str, Any]:
         """Parse JSON that is valid but not wrapped in the expected top-level object."""
+        text = cls._normalize_json_text(text)
         if not text:
             return {}
-        text = text.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-            text = re.sub(r"\s*```$", "", text)
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
@@ -158,6 +159,24 @@ class VLMEnhancer:
         if stage in {"export_validate", "pptx_validate"}:
             return {"issues": parsed, "pass": False}
         return {}
+
+    @staticmethod
+    def _normalize_json_text(text: str) -> str:
+        """Normalize common VLM JSON wrappers before parsing.
+
+        Some providers return Markdown fences with literal ``\\n`` sequences
+        instead of real newlines (for example `````json\\n{...}\\n`````), which
+        looks readable in logs but fails the normal fenced-JSON stripping path.
+        """
+        normalized = str(text or "").strip()
+        if not normalized:
+            return ""
+        if "\\n" in normalized and "\n" not in normalized:
+            normalized = normalized.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+        if normalized.startswith("```"):
+            normalized = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", normalized, flags=re.IGNORECASE)
+            normalized = re.sub(r"\s*```\s*$", "", normalized)
+        return normalized.strip()
 
     @staticmethod
     def _print_json(label: str, data: Any) -> None:
@@ -401,6 +420,8 @@ class VLMEnhancer:
         except Exception as exc:
             print(f"[VLMEnhancer] VLM-only structure recognition skipped: {exc}", flush=True)
             return {"recognized": False, "elements": [], "error": str(exc)}
+        if not data:
+            return {"recognized": False, "elements": [], "error": "empty or invalid VLM JSON response"}
 
         items = self._vlm_structure_items(data)
         elements: List[ElementInfo] = []
@@ -422,6 +443,7 @@ class VLMEnhancer:
                 score=self._confidence(item),
                 source_prompt="vlm_structure",
             )
+            setattr(elem, "vlm_item", item)
             self._apply_vlm_structure_attributes(elem, item, context.canvas_width, context.canvas_height)
             elem.processing_notes.append("vlm_structure")
             elements.append(elem)
@@ -452,15 +474,33 @@ class VLMEnhancer:
             prefix.append(background_item)
         for key in ("elements", "page_elements", "objects", "shapes", "items"):
             values = data.get(key)
-            if isinstance(values, list):
-                return prefix + [item for item in values if isinstance(item, dict)]
+            items = VLMEnhancer._coerce_vlm_item_collection(values)
+            if items:
+                return prefix + items
         page = data.get("page") or data.get("diagram") or data.get("structure")
         if isinstance(page, dict):
             for key in ("elements", "page_elements", "objects", "shapes", "items"):
                 values = page.get(key)
-                if isinstance(values, list):
-                    return prefix + [item for item in values if isinstance(item, dict)]
+                items = VLMEnhancer._coerce_vlm_item_collection(values)
+                if items:
+                    return prefix + items
         return prefix
+
+    @staticmethod
+    def _coerce_vlm_item_collection(values: Any) -> List[Dict[str, Any]]:
+        """Accept list or id-keyed dict element collections from VLM output."""
+        if isinstance(values, list):
+            return [item for item in values if isinstance(item, dict)]
+        if isinstance(values, dict):
+            items = []
+            for key, value in values.items():
+                if not isinstance(value, dict):
+                    continue
+                item = dict(value)
+                item.setdefault("id", key)
+                items.append(item)
+            return items
+        return []
 
     def _vlm_structure_element_type(self, item: Dict[str, Any]) -> Optional[str]:
         raw_type = item.get("type") or item.get("element_type") or item.get("shape_type") or item.get("kind")
@@ -490,10 +530,8 @@ class VLMEnhancer:
             return "picture"
         if normalized in {"table", "diagram", "decoration", "group"}:
             return "container" if normalized in {"table", "diagram", "group"} else "rectangle"
-        # Text is handled by OCR text_blocks in this pipeline to avoid duplicate
-        # text rendering from the VLM structure pass.
         if normalized == "text":
-            return None
+            return "text"
         return None
 
     @staticmethod
@@ -576,6 +614,28 @@ class VLMEnhancer:
         canvas_height: int = 1000,
     ) -> None:
         style = item.get("style") if isinstance(item.get("style"), dict) else {}
+        text_style_keys = {
+            "content",
+            "text",
+            "label",
+            "value",
+            "font_family",
+            "font_size",
+            "font_size_estimate",
+            "font_weight",
+            "font_style",
+            "font_color",
+            "text_align",
+            "vertical_align",
+        }
+        if str(elem.element_type or "").lower() == "text":
+            flattened = dict(getattr(elem, "vlm_item", {}) or item)
+            for key in text_style_keys:
+                if key not in flattened and key in item:
+                    flattened[key] = item.get(key)
+                if key not in flattened and key in style:
+                    flattened[key] = style.get(key)
+            setattr(elem, "vlm_item", flattened)
         stroke_value = item.get("stroke_color") or item.get("stroke") or style.get("stroke_color") or style.get("stroke")
         stroke_style = stroke_value if isinstance(stroke_value, dict) else {}
         line_style = self._normalize_line_style(
