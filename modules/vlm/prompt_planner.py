@@ -51,6 +51,8 @@ class VLMPromptPlanner:
             "{\"image\":[string],\"shape\":[string],\"arrow\":[string],\"background\":[string]}. "
             f"Each array must contain at most {max_per_group} short English noun phrases. "
             "Use prompts that describe visible visual objects, not OCR text. "
+            "Avoid generic prompts such as object, element, shape, line, text, label, diagram. "
+            "Prefer concrete visual noun phrases with 2-5 words. "
             "image: icons, logos, photos, embedded charts, symbolic pictures. "
             "shape: diagram nodes such as rectangles, rounded rectangles, circles, diamonds, cylinders. "
             "arrow: arrows, connector lines, dashed/dotted connectors. "
@@ -67,8 +69,8 @@ class VLMPromptPlanner:
             prompts: List[str] = []
             seen = set()
             for value in values or []:
-                prompt = re.sub(r"\s+", " ", str(value)).strip().strip("-•,.;")
-                if not prompt or prompt in seen:
+                prompt = re.sub(r"\s+", " ", str(value)).strip().strip("-•,.;").lower()
+                if not prompt or prompt in seen or self._is_unhelpful_prompt(prompt):
                     continue
                 seen.add(prompt)
                 prompts.append(prompt)
@@ -76,3 +78,24 @@ class VLMPromptPlanner:
                     break
             normalized[key] = prompts
         return normalized
+
+    @staticmethod
+    def _is_unhelpful_prompt(prompt: str) -> bool:
+        """Filter prompts that are too generic or likely to target OCR text."""
+        generic = {
+            "object",
+            "element",
+            "shape",
+            "line",
+            "text",
+            "label",
+            "diagram",
+            "graphic",
+            "component",
+            "item",
+        }
+        if prompt in generic:
+            return True
+        if any(token in prompt.split() for token in {"text", "label", "word", "caption"}):
+            return True
+        return len(prompt) < 4

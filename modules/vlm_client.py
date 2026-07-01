@@ -54,7 +54,7 @@ class VLMClient:
         self.ca_cert_path = self.config.get("ca_cert_path")
         self.proxy = self.config.get("proxy") or ""
         self.log_response = bool(self.config.get("log_response", True))
-        self.response_log_chars = int(self.config.get("response_log_chars", 4000) or 4000)
+        self.response_log_chars = int(self.config.get("response_log_chars", 0) or 0)
 
     def _request_url(self) -> str:
         """Resolve the request URL from configured base_url.
@@ -127,10 +127,7 @@ class VLMClient:
                 if len(image_url) > 80:
                     return {"type": "image_url", "image_url": "<base64 omitted>"}
         if part.get("type") == "text":
-            text = str(part.get("text", ""))
-            if len(text) > 500:
-                part = dict(part)
-                part["text"] = f"{text[:500]}...<truncated {len(text) - 500} chars>"
+            return part
         return part
 
     @classmethod
@@ -142,8 +139,6 @@ class VLMClient:
             content = msg.get("content")
             if isinstance(content, list):
                 msg["content"] = [cls._summarize_content_part(part) for part in content]
-            elif isinstance(content, str) and len(content) > 500:
-                msg["content"] = f"{content[:500]}...<truncated {len(content) - 500} chars>"
             summarized.append(msg)
         return summarized
 
@@ -232,7 +227,7 @@ class VLMClient:
                     {
                         "status_code": response.status_code,
                         "url": response.url,
-                        "body": response.text[:2000],
+                        "body": response.text,
                     },
                     ensure_ascii=False,
                 ),
@@ -248,6 +243,7 @@ class VLMClient:
                         "status_code": response.status_code,
                         "url": response.url,
                         "body_chars": len(response.text),
+                        "body": response.text,
                     },
                     ensure_ascii=False,
                 ),
