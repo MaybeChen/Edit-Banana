@@ -21,7 +21,7 @@ import warnings
 import yaml
 import json
 from pathlib import Path
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 
 # Skip PaddleX model host connectivity check to avoid startup delay
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
@@ -292,6 +292,9 @@ class Pipeline:
         context.intermediate_results['upscale_factor'] = 1.0
 
         try:
+            if self._recognition_mode() == "vlm_only":
+                return self._process_image_vlm_only(context, img_output_dir, img_stem)
+
             text_blocks = []
             if with_text and self.text_restorer is not None:
                 print("\n[1] PaddleOCR text extraction...")
@@ -329,34 +332,6 @@ class Pipeline:
                 context.intermediate_results['vlm_text_result_json'] = text_style_path
                 print(f"   VLM text styles: {styled.get('updated', 0)} updated")
                 print(f"   VLM text result: {text_style_path}")
-
-            if self._recognition_mode() == "vlm_only":
-                print("\n[3] VLM-only structure recognition...")
-                self._initialize_canvas_from_image(context)
-                structure_result = self.vlm_enhancer.recognize_structure(context)
-                structure_path = os.path.join(img_output_dir, "vlm_structure_result.json")
-                self._save_json(structure_path, structure_result)
-                context.intermediate_results['vlm_structure_result_json'] = structure_path
-                if not structure_result.get("recognized"):
-                    raise Exception(f"VLM-only recognition failed: {structure_result.get('error', 'no structured result')}")
-                overlay_path = self._save_vlm_structure_overlay(context, img_output_dir)
-                context.intermediate_results['vlm_structure_overlay'] = overlay_path
-                print(f"   VLM structure overlay: {overlay_path}")
-                if structure_result.get("raw_count", 0) and not context.elements:
-                    print("   Warning: VLM returned raw items but none passed schema/bbox validation")
-                print(f"   VLM-only elements: {len(context.elements)}")
-
-                print("\n[4] VLM element attribute enrichment...")
-                attr_result = self.vlm_enhancer.enrich_element_attributes(context)
-                attr_path = os.path.join(img_output_dir, "vlm_element_attributes.json")
-                self._save_json(attr_path, {"elements": [e.to_dict() for e in context.elements], "changes": attr_result.get("changes", [])})
-                context.intermediate_results['vlm_element_attributes_json'] = attr_path
-                print(f"   VLM element attributes: {attr_result.get('updated', 0)} updated")
-
-                print("\n[5] Direct PPTX generation + VLM quality loop...")
-                pptx_path = self._run_pptx_quality_loop(context, text_blocks, img_output_dir, img_stem)
-                print(f"\n{'='*60}\nDone.\n{'='*60}")
-                return pptx_path
 
             print("\n[3] SAM3 segmentation (coarse prompts)...")
             if groups:
@@ -424,6 +399,90 @@ class Pipeline:
             traceback.print_exc()
             return None
 
+    def _process_image_vlm_only(self, context: ProcessingContext, img_output_dir: str, img_stem: str) -> Optional[str]:
+        """Run the independent VLM-only pipeline.
+
+        This path intentionally does not call PaddleOCR/SAM3/CV processors. Text is
+        reconstructed from the ``text`` elements returned by the VLM structure
+        prompt, so changes here do not alter the original SAM3-first workflow.
+        """
+        print("\n[1] VLM-only structure recognition...")
+        self._initialize_canvas_from_image(context)
+        structure_result = self.vlm_enhancer.recognize_structure(context)
+        structure_path = os.path.join(img_output_dir, "vlm_structure_result.json")
+        self._save_json(structure_path, structure_result)
+        context.intermediate_results['vlm_structure_result_json'] = structure_path
+        if not structure_result.get("recognized"):
+            raise Exception(f"VLM-only recognition failed: {structure_result.get('error', 'no structured result')}")
+
+        text_blocks = self._extract_vlm_text_blocks(context)
+        context.intermediate_results['vlm_text_blocks'] = text_blocks
+        context.intermediate_results['ocr_text_blocks'] = text_blocks
+        text_path = os.path.join(img_output_dir, "vlm_text_result.json")
+        self._save_json(text_path, {"text_blocks": text_blocks, "source": "vlm_structure_text_elements"})
+        context.intermediate_results['vlm_text_result_json'] = text_path
+        print(f"   VLM text blocks: {len(text_blocks)}")
+
+        overlay_path = self._save_vlm_structure_overlay(context, img_output_dir)
+        context.intermediate_results['vlm_structure_overlay'] = overlay_path
+        print(f"   VLM structure overlay: {overlay_path}")
+        if structure_result.get("raw_count", 0) and not context.elements:
+            print("   Warning: VLM returned raw items but none passed schema/bbox validation")
+        print(f"   VLM-only elements: {len(context.elements)}")
+
+        print("\n[2] VLM element attribute enrichment...")
+        attr_result = self.vlm_enhancer.enrich_element_attributes(context)
+        attr_path = os.path.join(img_output_dir, "vlm_element_attributes.json")
+        self._save_json(attr_path, {"elements": [e.to_dict() for e in context.elements], "changes": attr_result.get("changes", [])})
+        context.intermediate_results['vlm_element_attributes_json'] = attr_path
+        print(f"   VLM element attributes: {attr_result.get('updated', 0)} updated")
+
+        print("\n[3] Direct PPTX generation + VLM quality loop...")
+        pptx_path = self._run_pptx_quality_loop(context, text_blocks, img_output_dir, img_stem)
+        print(f"\n{'='*60}\nDone.\n{'='*60}")
+        return pptx_path
+
+    @staticmethod
+    def _extract_vlm_text_blocks(context: ProcessingContext) -> List[Dict[str, Any]]:
+        """Convert VLM structure ``text`` elements into exporter text blocks."""
+        text_blocks: List[Dict[str, Any]] = []
+        for elem in context.elements:
+            if str(elem.element_type or "").lower() != "text":
+                continue
+            meta = getattr(elem, "vlm_item", {}) or {}
+            bbox = elem.bbox
+            content = (
+                meta.get("content")
+                or meta.get("text")
+                or meta.get("label")
+                or meta.get("value")
+                or ""
+            )
+            if not str(content).strip():
+                continue
+            text_blocks.append(
+                {
+                    "id": len(text_blocks),
+                    "source_element_id": elem.id,
+                    "text": str(content).strip(),
+                    "geometry": {
+                        "x": bbox.x1,
+                        "y": bbox.y1,
+                        "width": bbox.width,
+                        "height": bbox.height,
+                    },
+                    "font_family": meta.get("font_family") or "Microsoft YaHei",
+                    "font_size": meta.get("font_size_estimate") or meta.get("font_size") or 12,
+                    "font_weight": meta.get("font_weight") or "normal",
+                    "font_style": meta.get("font_style") or "normal",
+                    "font_color": meta.get("font_color") or "#000000",
+                    "text_align": meta.get("text_align") or "center",
+                    "vertical_align": meta.get("vertical_align") or "middle",
+                    "confidence": elem.score,
+                }
+            )
+        return text_blocks
+
     @staticmethod
     def _save_json(path: str, data: dict) -> str:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -478,6 +537,11 @@ class Pipeline:
             else:
                 draw.rectangle(bbox.to_list(), outline=color, width=2)
             label = f"{elem.id}:{elem.element_type}"
+            if elem_type == "text":
+                meta = getattr(elem, "vlm_item", {}) or {}
+                content = str(meta.get("content") or meta.get("text") or meta.get("label") or "")[:24]
+                if content:
+                    label = f"{label}:{content}"
             text_xy = (max(0, bbox.x1), max(0, bbox.y1 - 12))
             draw.text(text_xy, label, fill=color, font=font)
         canvas.save(output_path)
@@ -508,6 +572,11 @@ class Pipeline:
         prepared = []
         for elem in context.elements:
             elem_type = elem.element_type.lower()
+
+            if elem_type == "text":
+                # VLM-only text elements are converted to text_blocks and exported
+                # as native PPT text boxes; do not also render shape placeholders.
+                continue
 
             if elem_type in {'arrow', 'line', 'connector'}:
                 if self._is_border_like_connector(elem, context):
