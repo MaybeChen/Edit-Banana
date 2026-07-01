@@ -111,8 +111,8 @@ class ConfigLoader:
             'sam3': {
                 'checkpoint_path': '',
                 'bpe_path': '',
-                'use_vlm_prompts': False,
-                'vlm_prompt_max_per_group': 8,
+                'use_vlm_prompts': True,
+                'vlm_prompt_max_per_group': 6,
             },
             'prompt_groups': {
                 'image': {
@@ -125,22 +125,22 @@ class ConfigLoader:
                 'arrow': {
                     'name': '箭头类',
                     'prompts': ['arrow', 'line', 'connector'],
-                    'score_threshold': 0.45,
-                    'min_area': 50,
+                    'score_threshold': 0.40,
+                    'min_area': 40,
                     'priority': 4,
                 },
                 'shape': {
                     'name': '基本图形',
                     'prompts': ['rectangle', 'rounded rectangle', 'diamond', 'ellipse'],
                     'score_threshold': 0.5,
-                    'min_area': 200,
+                    'min_area': 150,
                     'priority': 3,
                 },
                 'background': {
                     'name': '背景容器',
                     'prompts': ['section_panel', 'title bar', 'container'],
                     'score_threshold': 0.25,  # 降低阈值以检测更多背景色块
-                    'min_area': 500,
+                    'min_area': 400,
                     'priority': 1,
                 },
             },
@@ -622,20 +622,29 @@ class Sam3InfoExtractor(BaseProcessor):
         """Load default prompt groups and optionally inject image-specific VLM prompts."""
         prompt_groups = copy.deepcopy(ConfigLoader.get_prompt_groups())
         sam3_config = ConfigLoader.get_sam3_config()
-        use_vlm_prompts = bool(sam3_config.get('use_vlm_prompts', False))
-        max_per_group = int(sam3_config.get('vlm_prompt_max_per_group', 8) or 8)
+        multimodal_config = ConfigLoader.get_multimodal_config()
+        use_vlm_prompts = bool(sam3_config.get('use_vlm_prompts', True))
+        prompt_planning_enabled = bool(
+            use_vlm_prompts
+            and multimodal_config.get('enabled', False)
+            and (multimodal_config.get('use_for') or {}).get('prompt_planning', False)
+        )
+        max_per_group = int(sam3_config.get('vlm_prompt_max_per_group', 6) or 6)
         vlm_record = {
-            'enabled': use_vlm_prompts,
+            'enabled': prompt_planning_enabled,
+            'configured': use_vlm_prompts,
             'image_path': context.image_path,
             'max_per_group': max_per_group,
             'dynamic_prompts': {key.value: [] for key in PromptGroup},
             'merged_prompts': {},
             'error': None,
         }
+        if use_vlm_prompts and not prompt_planning_enabled:
+            vlm_record['error'] = 'VLM prompt planning disabled because multimodal.enabled/use_for.prompt_planning is not enabled'
 
-        if use_vlm_prompts:
+        if prompt_planning_enabled:
             try:
-                planner = VLMPromptPlanner(ConfigLoader.get_multimodal_config())
+                planner = VLMPromptPlanner(multimodal_config)
                 dynamic_prompts = planner.plan(context.image_path, max_per_group=max_per_group)
                 mapping = {
                     'image': PromptGroup.IMAGE,
