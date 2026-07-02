@@ -61,6 +61,8 @@ class VLMEnhancer:
         self.use_for = {**default_use_for, **(self.config.get("use_for") or {})}
         self.thresholds = self.config.get("thresholds") or {}
         self.max_elements = int(self.config.get("max_elements_for_vlm", 80) or 80)
+        self.vlm_only_region_max_items = int(self.config.get("vlm_only_region_max_items", 20) or 20)
+        self.vlm_only_ocr_anchor_max_blocks = int(self.config.get("vlm_only_ocr_anchor_max_blocks", 30) or 30)
         self.client = create_vlm_client_from_config(self.root_config) if self.enabled else None
 
     def _enabled_for(self, feature: str) -> bool:
@@ -615,13 +617,15 @@ class VLMEnhancer:
 
     def recognize_region_elements(self, context: ProcessingContext, regions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Stage 2: recognize elements inside known regions."""
-        ocr_context = self._summarize_ocr_context(context)
+        ocr_context = self._summarize_ocr_context(context, max_blocks=self.vlm_only_ocr_anchor_max_blocks)
+        compact_regions = self._summarize_vlm_regions(regions, max_items=self.vlm_only_region_max_items)
         prompt = (
             VLM_REGION_ELEMENTS_PROMPT
-            + "已识别粗区域："
-            + json.dumps(regions[: self.max_elements], ensure_ascii=False)
-            + "；OCR文本锚点（如果存在，text 元素应优先复用这些文字和位置）："
-            + json.dumps(ocr_context, ensure_ascii=False)
+            + "\n\n已识别粗区域 JSON："
+            + json.dumps(compact_regions, ensure_ascii=False, separators=(",", ":"))
+            + "\nOCR文本锚点 JSON（如果存在，text 元素应优先复用这些文字和位置；列表可能已截断）："
+            + json.dumps(ocr_context, ensure_ascii=False, separators=(",", ":"))
+            + "\n只输出 {\"elements\":[...]}，不要复述输入 JSON。"
         )
         try:
             data = self._parse_json_response_with_debug(
@@ -1244,6 +1248,24 @@ class VLMEnhancer:
                         int(geo.get("x", 0) + geo.get("width", 0)),
                         int(geo.get("y", 0) + geo.get("height", 0)),
                     ],
+                }
+            )
+        return summary
+
+    @staticmethod
+    def _summarize_vlm_regions(regions: List[Dict[str, Any]], max_items: int = 20) -> List[Dict[str, Any]]:
+        """Keep region context compact before injecting it into a VLM prompt."""
+        summary = []
+        for idx, region in enumerate((regions or [])[:max_items]):
+            if not isinstance(region, dict):
+                continue
+            summary.append(
+                {
+                    "id": region.get("id", f"r{idx}"),
+                    "type": region.get("type"),
+                    "semantic_type": region.get("semantic_type") or region.get("subtype") or region.get("type"),
+                    "bbox": region.get("bbox") or region.get("bounding_box") or region.get("box"),
+                    "confidence": region.get("confidence"),
                 }
             )
         return summary

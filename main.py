@@ -107,6 +107,9 @@ def load_config() -> dict:
                 'x_hw_appkey': '',
                 'max_tokens': 4000,
                 'timeout': 60,
+                'request_text_log_chars': 1200,
+                'vlm_only_region_max_items': 20,
+                'vlm_only_ocr_anchor_max_blocks': 30,
                 'enabled': False,
                 'use_for': {
                     'prompt_planning': True,

@@ -142,11 +142,15 @@ multimodal:
   max_tokens: 4000
   timeout: 60
   verify_ssl: true
-  # VLMClient logs full non-image request/response data; image/base64 payloads are omitted.
+  # VLMClient logs compact request metadata; image/base64 payloads are omitted.
   log_response: true
-  # Deprecated: logs are no longer truncated except image/base64 payloads.
+  # Request text logs are previews only to avoid unreadable giant OCR/prompt dumps.
+  request_text_log_chars: 1200
+  # Deprecated: response logs are summarized by parsed PPTX-relevant fields.
   response_log_chars: 0
   max_elements_for_vlm: 80
+  vlm_only_region_max_items: 20
+  vlm_only_ocr_anchor_max_blocks: 30
   # Force SAM3 back to coarse recall prompts; VLM/CV fill detailed attributes later.
   coarse_sam_prompts: true
   use_for:
