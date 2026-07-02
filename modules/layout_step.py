@@ -1,9 +1,9 @@
 """Step 1: full-page Layout VLM recognition artifacts.
 
 This module intentionally stops after Layout VLM.  It creates two artifacts:
-- a structured JSON file with normalized_0_1000 regions and pixel bboxes;
-- an overlay image drawn on the original image with normalized bboxes converted
-  back to original-pixel coordinates.
+- a structured JSON file with regions in original-image pixel coordinates;
+- an overlay image drawn on the original image with pixel bboxes mapped from
+  the exact image sent to VLM.
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from PIL import Image, ImageDraw, ImageFont
 
-from prompts.vlm_structure import VLM_PAGE_REGIONS_PROMPT
+from prompts.vlm_structure import build_vlm_page_regions_prompt
 from .vlm_client import create_vlm_client_from_config
 
 MAX_VLM_LONG_EDGE = 2048
-COORDINATE_SYSTEM = "normalized_0_1000"
+COORDINATE_SYSTEM = "pixel_original"
 LAYOUT_REGION_TYPES = {
     "background",
     "header",
@@ -76,9 +76,10 @@ def run_layout_step(
 
     try:
         client = create_vlm_client_from_config(config or {})
-        response = client.analyze_image(preprocess["vlm_image_path"], VLM_PAGE_REGIONS_PROMPT)
+        prompt = build_vlm_page_regions_prompt(preprocess["vlm_image_size"]["width"], preprocess["vlm_image_size"]["height"])
+        response = client.analyze_image(preprocess["vlm_image_path"], prompt)
         data = parse_json_response(response)
-        regions = normalize_regions(data.get("regions", []), preprocess["original_size"])
+        regions = normalize_regions(data.get("regions", []), preprocess["original_size"], preprocess["vlm_image_size"])
         artifact.update(
             {
                 "status": "completed",
@@ -174,15 +175,15 @@ def extract_response_text(response: Any) -> str:
     return ""
 
 
-def normalize_regions(raw_regions: Any, original_size: Dict[str, int]) -> List[Dict[str, Any]]:
-    """Validate normalized bboxes and attach converted original-pixel bboxes."""
+def normalize_regions(raw_regions: Any, original_size: Dict[str, int], vlm_size: Dict[str, int]) -> List[Dict[str, Any]]:
+    """Validate VLM-image pixel bboxes and map them to original-image pixels."""
     if not isinstance(raw_regions, list):
         return []
     regions: List[Dict[str, Any]] = []
     for index, raw in enumerate(raw_regions):
         if not isinstance(raw, dict):
             continue
-        bbox = normalize_bbox(raw.get("bbox"))
+        bbox = normalize_bbox(raw.get("bbox"), vlm_size, original_size)
         if bbox is None:
             continue
         region_type = str(raw.get("type") or "").strip()
@@ -193,32 +194,62 @@ def normalize_regions(raw_regions: Any, original_size: Dict[str, int]) -> List[D
             "id": str(raw.get("id") or f"region_{index + 1:03d}"),
             "type": region_type,
             "bbox": bbox,
-            "pixel_bbox": normalized_bbox_to_pixel_dict(bbox, original_size["width"], original_size["height"]),
+            "pixel_bbox": bbox,
+            "coordinate_system": COORDINATE_SYSTEM,
             "confidence": confidence,
         }
         regions.append(region)
-    return regions
+    return drop_near_duplicate_regions(regions)
 
 
-def normalize_bbox(raw_bbox: Any) -> Optional[Dict[str, int]]:
-    """Clamp bbox to normalized_0_1000 and keep width/height positive."""
+def drop_near_duplicate_regions(regions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove regions with near-identical bboxes because they add overlay noise only."""
+    kept: List[Dict[str, Any]] = []
+    for region in regions:
+        if any(region_iou(region, candidate) >= 0.96 for candidate in kept):
+            continue
+        kept.append(region)
+    return kept
+
+
+def region_iou(first: Dict[str, Any], second: Dict[str, Any]) -> float:
+    a = first.get("pixel_bbox") or first.get("bbox") or {}
+    b = second.get("pixel_bbox") or second.get("bbox") or {}
+    ax1 = float(a.get("x", 0) or 0)
+    ay1 = float(a.get("y", 0) or 0)
+    ax2 = ax1 + float(a.get("width", 0) or 0)
+    ay2 = ay1 + float(a.get("height", 0) or 0)
+    bx1 = float(b.get("x", 0) or 0)
+    by1 = float(b.get("y", 0) or 0)
+    bx2 = bx1 + float(b.get("width", 0) or 0)
+    by2 = by1 + float(b.get("height", 0) or 0)
+    inter_w = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    inter_h = max(0.0, min(ay2, by2) - max(ay1, by1))
+    intersection = inter_w * inter_h
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def normalize_bbox(raw_bbox: Any, vlm_size: Dict[str, int], original_size: Dict[str, int]) -> Optional[Dict[str, int]]:
+    """Clamp VLM-image pixel bbox and map it to original-image pixels."""
     if not isinstance(raw_bbox, dict):
         return None
-    x = clamp_int(raw_bbox.get("x"), 0, 1000)
-    y = clamp_int(raw_bbox.get("y"), 0, 1000)
-    width = clamp_int(raw_bbox.get("width"), 0, 1000 - x)
-    height = clamp_int(raw_bbox.get("height"), 0, 1000 - y)
+    vlm_width = max(1, int(vlm_size.get("width") or original_size["width"]))
+    vlm_height = max(1, int(vlm_size.get("height") or original_size["height"]))
+    x = clamp_int(raw_bbox.get("x"), 0, vlm_width)
+    y = clamp_int(raw_bbox.get("y"), 0, vlm_height)
+    width = clamp_int(raw_bbox.get("width"), 0, vlm_width - x)
+    height = clamp_int(raw_bbox.get("height"), 0, vlm_height - y)
     if width <= 0 or height <= 0:
         return None
-    return {"x": x, "y": y, "width": width, "height": height}
-
-
-def normalized_bbox_to_pixel_dict(bbox: Dict[str, int], width: int, height: int) -> Dict[str, int]:
-    """Convert normalized_0_1000 bbox to original image pixels."""
-    x1 = round(bbox["x"] * width / 1000)
-    y1 = round(bbox["y"] * height / 1000)
-    x2 = round((bbox["x"] + bbox["width"]) * width / 1000)
-    y2 = round((bbox["y"] + bbox["height"]) * height / 1000)
+    scale_x = original_size["width"] / vlm_width
+    scale_y = original_size["height"] / vlm_height
+    x1 = round(x * scale_x)
+    y1 = round(y * scale_y)
+    x2 = round((x + width) * scale_x)
+    y2 = round((y + height) * scale_y)
     return {"x": x1, "y": y1, "width": max(0, x2 - x1), "height": max(0, y2 - y1)}
 
 
@@ -229,19 +260,19 @@ def normalize_reading_order(raw_order: Any, regions: List[Dict[str, Any]]) -> Li
         order = [str(item) for item in raw_order if str(item) in valid_ids]
         if order:
             return order
-    sorted_regions = sorted(regions, key=lambda r: (r["bbox"]["y"], r["bbox"]["x"]))
+    sorted_regions = sorted(regions, key=lambda r: (r["pixel_bbox"]["y"], r["pixel_bbox"]["x"]))
     return [region["id"] for region in sorted_regions]
 
 
 def draw_layout_overlay(image_path: Path, output_path: Path, regions: List[Dict[str, Any]]) -> None:
-    """Draw normalized regions after converting them to original-pixel coordinates."""
+    """Draw original-pixel layout regions."""
     with Image.open(image_path) as img:
         canvas = img.convert("RGB")
     draw = ImageDraw.Draw(canvas)
     font = ImageFont.load_default()
     palette = ["#ff3b30", "#007aff", "#34c759", "#ff9500", "#af52de", "#00c7be"]
     for index, region in enumerate(regions):
-        pixel_bbox = region.get("pixel_bbox") or normalized_bbox_to_pixel_dict(region["bbox"], canvas.width, canvas.height)
+        pixel_bbox = region.get("pixel_bbox") or region["bbox"]
         x1 = int(pixel_bbox["x"])
         y1 = int(pixel_bbox["y"])
         x2 = x1 + int(pixel_bbox["width"])
