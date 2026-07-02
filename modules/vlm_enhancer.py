@@ -589,11 +589,12 @@ class VLMEnhancer:
         return result
 
     def recognize_page_regions(self, context: ProcessingContext) -> Dict[str, Any]:
-        """Stage 1: recognize only coarse page regions."""
+        """Stage 1: recognize only page skeleton and major layout regions."""
         threshold = float(self.thresholds.get("vlm_region_confidence", self.thresholds.get("vlm_structure_confidence", 0.60)))
+        vlm_image_path = self._prepare_vlm_layout_image(context)
         try:
             data = self._parse_json_response_with_debug(
-                self.client.analyze_image(context.image_path, VLM_PAGE_REGIONS_PROMPT),
+                self.client.analyze_image(vlm_image_path, VLM_PAGE_REGIONS_PROMPT),
                 "vlm_page_regions",
             )
         except Exception as exc:
@@ -605,15 +606,88 @@ class VLMEnhancer:
             if not isinstance(item, dict) or self._confidence(item) < threshold:
                 continue
             bbox = self._extract_vlm_bbox(item)
-            if bbox is None or self._normalize_bbox(bbox, 1000, 1000) is None:
+            normalized_bbox = self._normalize_bbox(bbox, 1000, 1000) if bbox is not None else None
+            if normalized_bbox is None:
                 continue
             region = dict(item)
-            region.setdefault("id", f"r{idx}")
+            region.setdefault("id", f"region_{idx + 1:03d}")
+            region["bbox"] = {"x": normalized_bbox[0], "y": normalized_bbox[1], "width": normalized_bbox[2] - normalized_bbox[0], "height": normalized_bbox[3] - normalized_bbox[1]}
+            region["pixel_bbox"] = self._normalized_bbox_to_pixel_dict(region["bbox"], context.canvas_width, context.canvas_height)
             regions.append(region)
-        result = {"recognized": bool(regions), "regions": regions, "raw_count": len(raw_regions)}
+        result = {
+            "recognized": bool(regions),
+            "page_aspect_ratio_estimate": data.get("page_aspect_ratio_estimate"),
+            "layout_pattern": data.get("layout_pattern"),
+            "page_structure": data.get("page_structure"),
+            "regions": regions,
+            "reading_order": data.get("reading_order", []),
+            "raw_count": len(raw_regions),
+            "coordinate_system": "normalized_0_1000",
+            "vlm_image_path": vlm_image_path,
+            "original_image_path": context.image_path,
+            "original_size": {"width": context.canvas_width, "height": context.canvas_height},
+        }
         self._print_json("vlm_page_regions recognized", {"items": regions})
         self._write_artifact(context, "vlm_page_regions.json", result)
+        overlay_path = self._save_vlm_page_regions_overlay(context, regions)
+        result["overlay_path"] = overlay_path
+        context.intermediate_results["vlm_page_regions_overlay"] = overlay_path
+        self._write_artifact(context, "vlm_page_regions.json", result)
         return result
+
+    def _prepare_vlm_layout_image(self, context: ProcessingContext) -> str:
+        """Save original-size metadata and create the <=2048 long-edge image for VLM."""
+        from PIL import Image
+        os.makedirs(context.output_dir, exist_ok=True)
+        with Image.open(context.image_path) as img:
+            width, height = img.size
+            context.canvas_width = context.canvas_width or width
+            context.canvas_height = context.canvas_height or height
+            long_edge = max(width, height)
+            if long_edge <= 2048:
+                vlm_path = context.image_path
+                vlm_size = {"width": width, "height": height}
+            else:
+                scale = 2048 / float(long_edge)
+                resized = img.convert("RGB").resize((max(1, round(width * scale)), max(1, round(height * scale))), Image.LANCZOS)
+                vlm_path = os.path.join(context.output_dir, "vlm_layout_thumbnail.png")
+                resized.save(vlm_path)
+                vlm_size = {"width": resized.width, "height": resized.height}
+        context.intermediate_results["original_image_path"] = context.image_path
+        context.intermediate_results["original_size"] = {"width": width, "height": height}
+        context.intermediate_results["vlm_layout_image_path"] = vlm_path
+        context.intermediate_results["vlm_layout_image_size"] = vlm_size
+        return vlm_path
+
+    @staticmethod
+    def _normalized_bbox_to_pixel_dict(bbox: Dict[str, Any], width: int, height: int) -> Dict[str, int]:
+        x = float(bbox.get("x", 0) or 0)
+        y = float(bbox.get("y", 0) or 0)
+        bbox_width = float(bbox.get("width", 0) or 0)
+        bbox_height = float(bbox.get("height", 0) or 0)
+        x1 = round(x * width / 1000)
+        y1 = round(y * height / 1000)
+        x2 = round((x + bbox_width) * width / 1000)
+        y2 = round((y + bbox_height) * height / 1000)
+        return {"x": x1, "y": y1, "width": max(0, x2 - x1), "height": max(0, y2 - y1)}
+
+    def _save_vlm_page_regions_overlay(self, context: ProcessingContext, regions: List[Dict[str, Any]]) -> str:
+        """Draw layout regions on the original image using real pixel coordinates."""
+        from PIL import Image, ImageDraw, ImageFont
+        output_path = os.path.join(context.output_dir, "vlm_page_regions_overlay.png")
+        with Image.open(context.image_path) as img:
+            canvas = img.convert("RGB")
+        draw = ImageDraw.Draw(canvas)
+        font = ImageFont.load_default()
+        for region in regions:
+            pixel_bbox = region.get("pixel_bbox") or self._normalized_bbox_to_pixel_dict(region.get("bbox", {}), canvas.width, canvas.height)
+            x1, y1 = int(pixel_bbox["x"]), int(pixel_bbox["y"])
+            x2, y2 = x1 + int(pixel_bbox["width"]), y1 + int(pixel_bbox["height"])
+            draw.rectangle([x1, y1, x2, y2], outline="#ff3b30", width=3)
+            label = f"{region.get('id')}:{region.get('type')} {float(region.get('confidence', 0)):.2f}"
+            draw.text((max(0, x1), max(0, y1 - 12)), label, fill="#ff3b30", font=font)
+        canvas.save(output_path)
+        return output_path
 
     def recognize_region_elements(self, context: ProcessingContext, regions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Stage 2: recognize elements inside known regions."""
@@ -850,8 +924,35 @@ class VLMEnhancer:
             return direct
 
         normalized = str(raw_type or "").strip().lower().replace("_", " ")
-        if normalized in {"background", "container", "card", "panel", "section", "header", "footer", "sidebar"}:
+        if normalized in {
+            "background",
+            "container",
+            "card",
+            "panel",
+            "section",
+            "header",
+            "footer",
+            "sidebar",
+            "main content",
+            "main_content",
+            "container group",
+            "container_group",
+            "card group",
+            "card_group",
+            "table region",
+            "table_region",
+            "diagram region",
+            "diagram_region",
+            "complex visual region",
+            "complex_visual_region",
+        }:
             return "container"
+        if normalized in {"image region", "image_region"}:
+            return "picture"
+        if normalized in {"icon logo region", "icon_logo_region"}:
+            return "logo"
+        if normalized in {"chart region", "chart_region"}:
+            return "chart"
         if normalized == "shape":
             shape_aliases = {
                 "rounded rectangle": "rounded rectangle",
