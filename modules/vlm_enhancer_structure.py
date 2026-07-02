@@ -101,7 +101,7 @@ class VLMStructureMixin:
         return result
 
     def recognize_structure(self, context: ProcessingContext) -> Dict[str, Any]:
-        """Ask VLM to recognize the editable page structure without SAM3 candidates."""
+        """Ask VLM to recognize the editable page structure without segmentation candidates."""
         if not self.enabled or self.client is None:
             return {"recognized": False, "elements": [], "error": "multimodal VLM is disabled"}
         threshold = float(self.thresholds.get("vlm_structure_confidence", 0.60))

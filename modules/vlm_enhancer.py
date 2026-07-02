@@ -1,7 +1,7 @@
 """Optional VLM enhancement passes for the image-to-diagram pipeline.
 
 The enhancer is deliberately conservative: every VLM call is behind config
-switches and failures fall back to the existing OCR/SAM3/CV pipeline.
+switches and failures fall back to the existing OCR/CV pipeline.
 """
 
 from __future__ import annotations

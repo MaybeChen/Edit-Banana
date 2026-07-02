@@ -8,7 +8,7 @@ Usage:
     from modules import IconPictureProcessor, ProcessingContext
     processor = IconPictureProcessor()
     context = ProcessingContext(image_path="test.png")
-    context.elements = [...]  # from SAM3
+    context.elements = [...]  # from segmentation
     result = processor.process(context)
     # Elements get base64 and xml_fragment
 """
@@ -400,7 +400,7 @@ class IconPictureProcessor(BaseProcessor):
     def _clear_raster_border(self, image: Image.Image) -> Image.Image:
         """Remove raster card outlines before vector border overlay.
 
-        SAM3/card bboxes are often a few pixels outside the real rounded border. A
+        segmentation/card bboxes are often a few pixels outside the real rounded border. A
         fixed edge strip leaves inset dark arcs behind, creating doubled/fuzzy
         borders. Detect the first dark border bands near each side and clear up to
         that band so the vector overlay is the only visible card outline.
