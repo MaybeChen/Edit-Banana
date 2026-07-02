@@ -17,6 +17,12 @@ VLM_PAGE_REGIONS_PROMPT_TEMPLATE = """
 左上角为 (0,0)，右下角为 ({image_width},{image_height})。
 所有 bbox 的 x、y、width、height 都必须是基于这个宽高的像素整数。
 
+定位方法（非常重要）：
+- 先观察真实视觉边界：标题文字、浅灰分隔线、圆角容器边框、卡片组外框、左右栏分割线。
+- bbox 必须贴合这些真实边界，不要按页面高度平均切成几段，不要套用示例值或固定模板。
+- 除 header/footer/background 外，不要轻易给整页宽度；例如 main_content 不能覆盖左侧 sidebar。
+- 如果一个区域右侧/下方有明显空白或其他分区，bbox 必须停在可见边界处。
+
 请识别以下区域类型：
 - background
 - header
@@ -48,26 +54,18 @@ VLM_PAGE_REGIONS_PROMPT_TEMPLATE = """
 2. bbox 尽量贴合实际大区域，不要包含过多无关空白。
 3. 如果区域是另一个区域的子 ROI，增加 parent_id 指向父区域 id。
 4. 识别页面主布局，例如 single_column、two_column、three_column、dashboard、grid、timeline、header_body_footer。
-5. 输出阅读顺序。
+5. 输出 reading_order，顺序必须按真实阅读顺序排列。
 6. 不要输出页面内的具体文字内容。
-7. 只输出合法 JSON，不要输出解释或 Markdown。
+7. 输出前自检：如果 bbox 的 y/height 看起来像 120/400/520/920 等模板分段，而不是贴合图片边界，必须重新定位。
+8. 只输出合法 JSON，不要输出解释或 Markdown。
 
-输出格式：
-
-{
-  "page_aspect_ratio_estimate": "16:9",
-  "layout_pattern": "two_column",
-  "page_structure": "header + main_content + footer",
-  "regions": [
-    {
-      "id": "region_001",
-      "type": "header",
-      "bbox": {"x": 0, "y": 0, "width": {image_width}, "height": 120},
-      "confidence": 0.95
-    }
-  ],
-  "reading_order": ["region_001"]
-}
+输出 JSON 字段结构：
+- page_aspect_ratio_estimate: 字符串
+- layout_pattern: 字符串
+- page_structure: 字符串
+- regions: 数组；每项包含 id、type、bbox、confidence，可选 parent_id
+- bbox: 对象，包含 x、y、width、height，全部是当前输入图片像素整数
+- reading_order: region id 字符串数组
 """
 
 
