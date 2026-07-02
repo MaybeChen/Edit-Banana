@@ -1,7 +1,7 @@
 """Optional VLM enhancement passes for the image-to-diagram pipeline.
 
 The enhancer is deliberately conservative: every VLM call is behind config
-switches and failures fall back to the existing OCR/SAM3/CV pipeline.
+switches and failures fall back to the existing OCR/CV pipeline.
 """
 
 from __future__ import annotations
@@ -100,9 +100,9 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
 
         region_result = self.recognize_page_regions(context)
         regions = region_result.get("regions", [])
-        element_result = self.recognize_region_elements(context, regions)
-        items = list(regions) + list(element_result.get("items", []))
-        elements = self._build_vlm_elements_from_items(items, context, source_prompt="vlm_region_elements")
+        planner_result = self.recognize_planner_page_structure(context, regions)
+        items = list(regions) + list(planner_result.get("items", []))
+        elements = self._build_vlm_elements_from_items(items, context, source_prompt="planner_vlm")
         context.elements = elements
 
         connector_result = self.recognize_connectors(context)
@@ -113,6 +113,7 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
             "dropped_count": max(0, len(items) - len(elements)),
             "regions": regions,
             "items": items,
+            "planner_stages": planner_result.get("stages", {}),
             "elements": [elem.to_dict() for elem in context.elements],
             "connector_changes": connector_result.get("changes", []),
         }
@@ -272,28 +273,18 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
         return intersection / union if union > 0 else 0.0
 
     def _prepare_vlm_layout_image(self, context: ProcessingContext) -> str:
-        """Save original-size metadata and create the <=2048 long-edge image for VLM."""
+        """Record original image size and use the real image for pixel-coordinate VLM calls."""
         from PIL import Image
         os.makedirs(context.output_dir, exist_ok=True)
         with Image.open(context.image_path) as img:
             width, height = img.size
-            context.canvas_width = context.canvas_width or width
-            context.canvas_height = context.canvas_height or height
-            long_edge = max(width, height)
-            if long_edge <= 2048:
-                vlm_path = context.image_path
-                vlm_size = {"width": width, "height": height}
-            else:
-                scale = 2048 / float(long_edge)
-                resized = img.convert("RGB").resize((max(1, round(width * scale)), max(1, round(height * scale))), Image.LANCZOS)
-                vlm_path = os.path.join(context.output_dir, "vlm_layout_thumbnail.png")
-                resized.save(vlm_path)
-                vlm_size = {"width": resized.width, "height": resized.height}
+        context.canvas_width = context.canvas_width or width
+        context.canvas_height = context.canvas_height or height
         context.intermediate_results["original_image_path"] = context.image_path
         context.intermediate_results["original_size"] = {"width": width, "height": height}
-        context.intermediate_results["vlm_layout_image_path"] = vlm_path
-        context.intermediate_results["vlm_layout_image_size"] = vlm_size
-        return vlm_path
+        context.intermediate_results["vlm_layout_image_path"] = context.image_path
+        context.intermediate_results["vlm_layout_image_size"] = {"width": width, "height": height}
+        return context.image_path
 
     @staticmethod
     def _normalize_page_region_type(value: Any) -> Optional[str]:
@@ -314,22 +305,11 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
         return {"x": x1, "y": y1, "width": max(0, x2 - x1), "height": max(0, y2 - y1)}
 
     def _vlm_bbox_to_original_pixel_dict(self, bbox: List[Any], context: ProcessingContext) -> Optional[Dict[str, int]]:
-        normalized_bbox = self._normalize_bbox(
-            bbox,
-            (context.intermediate_results.get("vlm_layout_image_size") or {}).get("width", context.canvas_width),
-            (context.intermediate_results.get("vlm_layout_image_size") or {}).get("height", context.canvas_height),
-        )
-        if normalized_bbox is None:
+        pixel_bbox = self._normalize_bbox(bbox, context.canvas_width, context.canvas_height)
+        if pixel_bbox is None:
             return None
-        vlm_size = context.intermediate_results.get("vlm_layout_image_size") or {"width": context.canvas_width, "height": context.canvas_height}
-        scale_x = max(1, int(context.canvas_width or 1)) / max(1, int(vlm_size.get("width") or 1))
-        scale_y = max(1, int(context.canvas_height or 1)) / max(1, int(vlm_size.get("height") or 1))
-        x1, y1, x2, y2 = normalized_bbox
-        ox1 = round(x1 * scale_x)
-        oy1 = round(y1 * scale_y)
-        ox2 = round(x2 * scale_x)
-        oy2 = round(y2 * scale_y)
-        return {"x": ox1, "y": oy1, "width": max(0, ox2 - ox1), "height": max(0, oy2 - oy1)}
+        x1, y1, x2, y2 = pixel_bbox
+        return {"x": x1, "y": y1, "width": max(0, x2 - x1), "height": max(0, y2 - y1)}
 
     def _save_vlm_page_regions_overlay(self, context: ProcessingContext, regions: List[Dict[str, Any]]) -> str:
         """Draw layout regions on the original image using real pixel coordinates."""

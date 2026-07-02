@@ -17,7 +17,6 @@ from .data_types import (
 )
 
 _LAZY_EXPORTS = {
-    "Sam3InfoExtractor": (".sam3_info_extractor", "Sam3InfoExtractor"),
     "XMLMerger": (".xml_merger", "XMLMerger"),
     "IconPictureProcessor": (".icon_picture_processor", "IconPictureProcessor"),
     "BasicShapeProcessor": (".basic_shape_processor", "BasicShapeProcessor"),
@@ -55,7 +54,6 @@ __all__ = [
     "LayerLevel",
     "get_layer_level",
     "TextRestorer",
-    "Sam3InfoExtractor",
     "XMLMerger",
     "IconPictureProcessor",
     "BasicShapeProcessor",

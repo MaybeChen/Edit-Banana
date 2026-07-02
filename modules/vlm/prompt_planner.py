@@ -1,6 +1,6 @@
-"""VLM prompt planner for SAM3 prompt groups.
+"""VLM prompt planner for segmentation prompt groups.
 
-Given a full input image, ask an OpenAI-compatible VLM to propose concise SAM3
+Given a full input image, ask an OpenAI-compatible VLM to propose concise segmentation
 text prompts for four groups: image, shape, arrow, and background.
 """
 
@@ -18,7 +18,7 @@ PROMPT_GROUP_KEYS = ("image", "shape", "arrow", "background")
 
 
 class VLMPromptPlanner:
-    """Plan image-specific SAM3 prompts with an OpenAI-compatible VLM."""
+    """Plan image-specific segmentation prompts with an OpenAI-compatible VLM."""
 
     def __init__(self, config: Optional[Mapping[str, Any]] = None):
         self.config = dict(config or {})
@@ -45,7 +45,7 @@ class VLMPromptPlanner:
 
     def _build_prompt(self, max_per_group: int) -> str:
         return (
-            "You are planning text prompts for SAM3 segmentation on a diagram image. "
+            "You are planning text prompts for segmentation segmentation on a diagram image. "
             "Analyze the entire image, not cropped regions. "
             "Return STRICT JSON only, no markdown. Schema: "
             "{\"image\":[string],\"shape\":[string],\"arrow\":[string],\"background\":[string]}. "
