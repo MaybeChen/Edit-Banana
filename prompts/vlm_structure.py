@@ -31,21 +31,24 @@ VLM_PAGE_REGIONS_PROMPT = """
 - complex_visual_region
 
 区域粒度要求（非常重要）：
-- 本阶段只输出页面级 / 大块 ROI，通常 4~10 个区域即可。
+- 本阶段输出页面骨架 + 可裁剪的大块 ROI，通常 8~15 个区域；不要只给 2~3 个超大块。
+- 允许父子两级区域：先给 header/sidebar/main_content/footer/container_group 等外层，再给其中最重要的 card_group、diagram_region。
 - 不要输出单个 Agent、Skill、Step 卡片、按钮、警告小标签、图标、Logo、连线或小节点。
 - 重复卡片列表必须合并为一个 card_group，例如“关键问题”下的 6 个 Step 卡片合并成一个 card_group。
-- 左侧参与者/能力列表应作为 sidebar 或 card_group，而不是拆成每一行。
-- 中央流程图、关系图、画布示意应作为 diagram_region 或 main_content，不要拆内部节点。
-- 底部“核心诉求/总结/能力要求”一类横向卡片组应作为 footer 或 card_group。
-- bbox 可以覆盖该区域内的标题和所有子卡片，但不要跨到其他大区域。
+- 左侧参与者/能力列表：外层输出 sidebar，内部列表整体再输出一个 card_group；不要拆成每一行。
+- 中央流程图、关系图、画布示意：外层可属于 main_content，内部核心图整体必须输出 diagram_region，不要拆内部节点。
+- 底部“核心诉求/总结/能力要求”一类横向卡片组：外层输出 footer 或 container_group，内部卡片整体再输出一个 card_group。
+- bbox 可以覆盖该区域内的标题和所有子卡片，但不要跨到其他大区域；父区域可包含子区域。
+- 如果页面中存在明显分区标题（如“关键问题”“核心诉求”），该标题和下方卡片应合成一个 container_group，并可再输出内部 card_group。
 
 要求：
 1. 每个区域必须包含唯一 id、type、bbox、confidence。
 2. bbox 尽量贴合实际大区域，不要包含过多无关空白。
-3. 识别页面主布局，例如 single_column、two_column、three_column、dashboard、grid、timeline、header_body_footer。
-4. 输出阅读顺序。
-5. 不要输出页面内的具体文字内容。
-6. 只输出合法 JSON，不要输出解释或 Markdown。
+3. 如果区域是另一个区域的子 ROI，增加 parent_id 指向父区域 id。
+4. 识别页面主布局，例如 single_column、two_column、three_column、dashboard、grid、timeline、header_body_footer。
+5. 输出阅读顺序。
+6. 不要输出页面内的具体文字内容。
+7. 只输出合法 JSON，不要输出解释或 Markdown。
 
 输出格式：
 
