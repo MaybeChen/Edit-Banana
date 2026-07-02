@@ -129,6 +129,8 @@ class ElementInfo:
     corner_radius: Optional[float] = None        # 圆角半径/比例（供VLM/CV属性补全使用）
     source_id: Optional[int] = None              # 连接线源元素ID（供VLM/布局修正使用）
     target_id: Optional[int] = None              # 连接线目标元素ID（供VLM/布局修正使用）
+    semantic_type: Optional[str] = None           # 原始/语义类型（table/chart/diagram/group等，避免过早压缩）
+    reconstruction_strategy: Optional[str] = None # 重建策略（native_shape/cropped_image/image_fallback等）
     
     # === 元数据 ===
     source_prompt: Optional[str] = None          # 触发此元素识别的prompt
@@ -159,6 +161,8 @@ class ElementInfo:
             'stroke_width': self.stroke_width,
             'source_id': self.source_id,
             'target_id': self.target_id,
+            'semantic_type': self.semantic_type,
+            'reconstruction_strategy': self.reconstruction_strategy,
         }
     
     @classmethod
@@ -183,6 +187,8 @@ class ElementInfo:
             stroke_width=data.get('stroke_width', 1),
             source_id=data.get('source_id'),
             target_id=data.get('target_id'),
+            semantic_type=data.get('semantic_type'),
+            reconstruction_strategy=data.get('reconstruction_strategy'),
         )
 
 
