@@ -99,10 +99,10 @@ class ElementInfo:
     """
     元素信息结构 - 所有模块之间传递元素的标准格式
     
-    SAM3提取后会填充: id, element_type, bbox, polygon, score, mask
+    segmentation提取后会填充: id, element_type, bbox, polygon, score, mask
     各子模块处理后填充: xml_fragment, layer_level
     """
-    # === 基础信息（SAM3提取） ===
+    # === 基础信息（segmentation提取） ===
     id: int                                      # 元素唯一ID
     element_type: str                            # 元素类型（字符串，对应ElementType）
     bbox: BoundingBox                            # 边界框
@@ -262,7 +262,7 @@ class ProcessingResult:
 @dataclass
 class ProcessingConfig:
     """处理配置"""
-    # SAM3配置
+    # segmentation配置
     score_threshold: float = 0.5
     min_area: int = 100
     epsilon_factor: float = 0.02
@@ -279,9 +279,9 @@ class ProcessingConfig:
             config = yaml.safe_load(f)
         
         return cls(
-            score_threshold=config.get('sam3', {}).get('score_threshold', 0.5),
-            min_area=config.get('sam3', {}).get('min_area', 100),
-            epsilon_factor=config.get('sam3', {}).get('epsilon_factor', 0.02),
+            score_threshold=config.get('segmentation', {}).get('score_threshold', 0.5),
+            min_area=config.get('segmentation', {}).get('min_area', 100),
+            epsilon_factor=config.get('segmentation', {}).get('epsilon_factor', 0.02),
             output_dir=config.get('paths', {}).get('output_dir', './output'),
         )
 

@@ -12,7 +12,7 @@ from .data_types import BoundingBox, ElementInfo
 
 class VLMRefinementMixin:
     def refine_elements(self, context: ProcessingContext) -> Dict[str, Any]:
-        """Ask VLM to correct SAM3 element types and line styles."""
+        """Ask VLM to correct segmentation element types and line styles."""
         if not self._enabled_for("element_refine") or not context.elements:
             return {"updated": 0, "items": []}
         threshold = float(self.thresholds.get("element_refine_confidence", 0.75))
@@ -224,22 +224,22 @@ class VLMRefinementMixin:
         return context.image_path
 
     def refine_segmentation(self, context: ProcessingContext) -> Dict[str, Any]:
-        """Use VLM to add/correct coarse SAM3 segmentation objects before attribute enrichment."""
+        """Use VLM to add/correct coarse segmentation segmentation objects before attribute enrichment."""
         if not self._enabled_for("segmentation_refine") or not context.elements:
             return {"updated": 0, "added": 0, "items": [], "changes": []}
         threshold = float(self.thresholds.get("segmentation_refine_confidence", 0.70))
         ocr_context = self._summarize_ocr_context(context)
         prompt = (
-            "你是图表分割结果增补和纠错器。SAM3 已输出候选对象，请基于带对象ID的标注图、原图视觉内容和 OCR 文本锚点补充漏检对象并纠正明显类型错误。"
+            "你是图表分割结果增补和纠错器。segmentation 已输出候选对象，请基于带对象ID的标注图、原图视觉内容和 OCR 文本锚点补充漏检对象并纠正明显类型错误。"
             + self._json_only_instruction(
                 '{"elements":[{"id":2,"type":"container","bbox":[10,20,200,120],"action":"update","confidence":0.86},{"type":"arrow","bbox":[1,2,30,40],"action":"add","confidence":0.82}]}'
             )
             + "action 只能是 update 或 add；update 必须带已有 id；add 必须给 bbox。type 只能选 icon,picture,rectangle,rounded rectangle,circle,ellipse,cylinder,diamond,triangle,hexagon,container,arrow,connector,line。"
             "重点检查：容器内部的小模块/表格/卡片是否漏检；水平或垂直分割线是否漏检；带顶部椭圆的数据库/分层共享块应为 cylinder 而不是 rounded rectangle；外层分组边框/区域框应为 container 而不是 connector。"
-            f"OCR文本锚点：{json.dumps(ocr_context, ensure_ascii=False)}；SAM3对象：{json.dumps(self._summarize_elements(context.elements), ensure_ascii=False)}"
+            f"OCR文本锚点：{json.dumps(ocr_context, ensure_ascii=False)}；segmentation对象：{json.dumps(self._summarize_elements(context.elements), ensure_ascii=False)}"
         )
         try:
-            data = self._parse_json_response_with_debug(self.client.analyze_image(self._image_for_stage(context, "sam3_visualization"), prompt), "segmentation_refine")
+            data = self._parse_json_response_with_debug(self.client.analyze_image(self._image_for_stage(context, "segmentation_visualization"), prompt), "segmentation_refine")
         except Exception as exc:
             print(f"[VLMEnhancer] segmentation refine skipped: {exc}", flush=True)
             return {"updated": 0, "added": 0, "items": [], "changes": []}
@@ -289,13 +289,13 @@ class VLMRefinementMixin:
         return result
 
     def enrich_element_attributes(self, context: ProcessingContext) -> Dict[str, Any]:
-        """Ask VLM to add export attributes to each SAM3/VLM element."""
+        """Ask VLM to add export attributes to each segmentation/VLM element."""
         if not self._enabled_for("element_attributes") or not context.elements:
             return {"updated": 0, "items": [], "changes": []}
         threshold = float(self.thresholds.get("element_attribute_confidence", 0.65))
         ocr_context = self._summarize_ocr_context(context)
         prompt = (
-            "你是图表元素属性识别器。请基于带对象ID的标注图、原图视觉内容、OCR 文本锚点和对象列表，为每个 SAM3 对象补充 PPTX/图形导出所需属性。"
+            "你是图表元素属性识别器。请基于带对象ID的标注图、原图视觉内容、OCR 文本锚点和对象列表，为每个 segmentation 对象补充 PPTX/图形导出所需属性。"
             + self._json_only_instruction(
                 '{"elements":[{"id":1,"type":"arrow","line_style":"dashed","arrow_heads":"end","source_id":2,"target_id":3,"fill_color":"#ffffff","stroke_color":"#333333","stroke_width":2,"corner_radius":8,"confidence":0.9}]}'
             )
@@ -304,7 +304,7 @@ class VLMRefinementMixin:
             f"OCR文本锚点：{json.dumps(ocr_context, ensure_ascii=False)}；对象列表：{json.dumps(self._summarize_elements(context.elements), ensure_ascii=False)}"
         )
         try:
-            data = self._parse_json_response_with_debug(self.client.analyze_image(self._image_for_stage(context, "sam3_vlm_refined_visualization"), prompt), "element_attributes")
+            data = self._parse_json_response_with_debug(self.client.analyze_image(self._image_for_stage(context, "segmentation_vlm_refined_visualization"), prompt), "element_attributes")
         except Exception as exc:
             print(f"[VLMEnhancer] element attributes skipped: {exc}", flush=True)
             return {"updated": 0, "items": [], "changes": []}
