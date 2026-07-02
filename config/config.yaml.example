@@ -164,6 +164,8 @@ multimodal:
     element_refine_confidence: 0.75
     region_refine_confidence: 0.70
     layout_refine_confidence: 0.70
+    vlm_region_confidence: 0.60
+    vlm_connector_confidence: 0.70
     text_style_confidence: 0.65
     segmentation_refine_confidence: 0.65
     element_attribute_confidence: 0.65
@@ -184,10 +186,13 @@ export:
 
 # Recognition mode:
 # - sam3_first: existing OCR -> SAM3 -> VLM repair path.
-# - vlm_only: skip SAM3 and ask the configured VLM to directly recognize an
-#   equivalent editable page structure from the image plus OCR text anchors.
+# - vlm_only: skip SAM3 and run staged VLM page-region, region-element,
+#   connector, attribute, and validation passes.
 recognition:
   mode: "sam3_first"
+  # In vlm_only mode, keep OCR text as anchors so VLM focuses on structure,
+  # grouping, semantics, and styles instead of re-reading all text itself.
+  use_ocr_anchors: true
 
 # Paths (optional)
 paths: {}
