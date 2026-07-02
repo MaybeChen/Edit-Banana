@@ -515,5 +515,112 @@ class RefinementProcessor(BaseProcessor):
         self._log(f"保存refinement可视化结果: {output_path}")
 
 
+class VLMRegionAnalyzer:
+    """分析bad region裁剪图，提取其中可结构化的子元素。"""
 
-from .refinement_vlm_region_analyzer import VLMRegionAnalyzer
+    STRUCTURED_TYPES = {
+        'rectangle', 'rounded_rectangle', 'rounded rectangle', 'circle', 'ellipse',
+        'cylinder', 'arrow', 'connector', 'container', 'section_panel', 'title_bar',
+        'diamond', 'triangle', 'hexagon', 'parallelogram', 'cloud', 'actor', 'line',
+        'text', 'icon', 'chart', 'logo', 'function_graph'
+    }
+
+    TYPE_ALIASES = {
+        'rounded rectangle': 'rounded_rectangle',
+        'round rectangle': 'rounded_rectangle',
+        'container': 'section_panel',
+        'image': 'picture',
+        'photo': 'picture',
+    }
+
+    def __init__(self, client: Any, config: Dict[str, Any]):
+        self.client = client
+        self.confidence_threshold = float(config.get('vlm_confidence_threshold', 0.7))
+
+    def analyze(self, crop: Image.Image, region_bbox: BoundingBox, start_id: int) -> List[ElementInfo]:
+        """返回可信的结构化ElementInfo列表；不可信或无结构化元素则返回空列表。"""
+        output = self.client.classify(self._image_to_data_url(crop), self._build_prompt(crop, region_bbox), REGION_ANALYSIS_SCHEMA)
+        elements_data = self._extract_elements(output)
+        elements: List[ElementInfo] = []
+        for idx, item in enumerate(elements_data):
+            elem = self._convert_element(item, region_bbox, start_id + idx)
+            if elem:
+                elements.append(elem)
+        return elements
+
+    def _extract_elements(self, output: Any) -> List[Dict[str, Any]]:
+        if not isinstance(output, dict):
+            raise ValueError('VLM output is not a JSON object')
+        top_conf = output.get('confidence', 1.0)
+        if top_conf is not None and float(top_conf) < self.confidence_threshold:
+            return []
+        elements = output.get('elements', [])
+        if not isinstance(elements, list) or not elements:
+            return []
+        return [item for item in elements if isinstance(item, dict)]
+
+    def _convert_element(self, item: Dict[str, Any], region_bbox: BoundingBox, element_id: int) -> Optional[ElementInfo]:
+        confidence = float(item.get('confidence', 0.0))
+        if confidence < self.confidence_threshold:
+            return None
+        element_type = self._normalize_type(str(item.get('element_type', 'unknown')))
+        if element_type not in self.STRUCTURED_TYPES:
+            return None
+        bbox = self._absolute_bbox(item.get('bbox'), region_bbox)
+        if bbox is None or bbox.area <= 0:
+            return None
+        notes = ['VLM bad-region structured element']
+        if item.get('reason'):
+            notes.append(str(item['reason'])[:160])
+        elem = ElementInfo(
+            id=element_id,
+            element_type=element_type,
+            bbox=bbox,
+            score=confidence,
+            layer_level=get_layer_level(element_type),
+            source_prompt='refinement_vlm_region',
+            processing_notes=notes
+        )
+        if item.get('line_style'):
+            elem.line_style = str(item['line_style']).strip().lower()
+        return elem
+
+    def _absolute_bbox(self, bbox: Any, region_bbox: BoundingBox) -> Optional[BoundingBox]:
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            return None
+        x1, y1, x2, y2 = [int(round(float(v))) for v in bbox]
+        # VLM prompt要求返回裁剪图相对坐标，这里平移回全图坐标并限制在bad region内。
+        x1 += region_bbox.x1
+        x2 += region_bbox.x1
+        y1 += region_bbox.y1
+        y2 += region_bbox.y1
+        x1 = max(region_bbox.x1, min(region_bbox.x2, x1))
+        x2 = max(region_bbox.x1, min(region_bbox.x2, x2))
+        y1 = max(region_bbox.y1, min(region_bbox.y2, y1))
+        y2 = max(region_bbox.y1, min(region_bbox.y2, y2))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return BoundingBox(x1, y1, x2, y2)
+
+    def _normalize_type(self, value: str) -> str:
+        normalized = value.strip().lower().replace('-', '_').replace(' ', '_')
+        return self.TYPE_ALIASES.get(normalized.replace('_', ' '), normalized)
+
+    def _image_to_data_url(self, image: Image.Image) -> str:
+        buffer = io.BytesIO()
+        image.save(buffer, format='PNG')
+        return 'data:image/png;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii')
+
+    def _build_prompt(self, crop: Image.Image, region_bbox: BoundingBox) -> str:
+        return (
+            'Analyze this cropped missing/bad diagram region and return STRICT JSON only. '
+            'If it contains clear structured diagram/UI elements, return '
+            '{"confidence": number, "elements": [{"element_type": string, "bbox": [x1,y1,x2,y2], '
+            '"confidence": number, "line_style": string|null, "reason": string}]}. '
+            'bbox coordinates must be relative to this crop in pixels. '
+            'Only include elements that are visually clear and structural; do not include photo-like/background content. '
+            'Allowed element_type values: rectangle, rounded_rectangle, circle, ellipse, cylinder, arrow, connector, '
+            'section_panel, diamond, triangle, hexagon, parallelogram, cloud, actor, line, text, icon, chart, logo, function_graph. '
+            'If no reliable structured element exists, return {"confidence": 0, "elements": []}. '
+            f'Crop size={crop.width}x{crop.height}; original bbox={region_bbox.to_list()}.'
+        )
