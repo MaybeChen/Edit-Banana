@@ -7,7 +7,7 @@ See project root README for full pipeline (Input image → Segmentation → Text
 ```
 modules/
 ├── base.py, data_types.py
-├── sam3_info_extractor.py   # Segmentation
+├── segmentation_info_extractor.py   # Segmentation
 ├── icon_picture_processor.py
 ├── basic_shape_processor.py
 ├── arrow_processor.py
@@ -41,7 +41,7 @@ python main.py -i input/flowchart.png --refine
 
 ```python
 from modules import (
-    Sam3InfoExtractor,
+    SegmentationInfoExtractor,
     IconPictureProcessor,
     BasicShapeProcessor,
     ArrowProcessor,
@@ -50,7 +50,7 @@ from modules import (
 )
 
 context = ProcessingContext(image_path="test.png")
-extractor = Sam3InfoExtractor()
+extractor = SegmentationInfoExtractor()
 result = extractor.process(context)
 context.elements = result.elements
 context.canvas_width = result.canvas_width

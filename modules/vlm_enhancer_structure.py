@@ -7,10 +7,150 @@ from typing import Any, Dict, List, Optional
 
 from .base import ProcessingContext
 from .data_types import BoundingBox, ElementInfo
-from prompts.vlm_structure import VLM_CONNECTOR_PROMPT, VLM_REGION_ELEMENTS_PROMPT, VLM_STRUCTURE_PROMPT
+from prompts.vlm_structure import (
+    ASSET_ROI_PROMPT_TEMPLATE,
+    CHART_ROI_PROMPT_TEMPLATE,
+    DIAGRAM_ROI_PROMPT_TEMPLATE,
+    SHAPE_ROI_PROMPT_TEMPLATE,
+    TABLE_ROI_PROMPT_TEMPLATE,
+    VLM_CONNECTOR_PROMPT,
+    VLM_REGION_ELEMENTS_PROMPT,
+    VLM_STRUCTURE_PROMPT,
+    build_roi_prompt,
+)
 
 
 class VLMStructureMixin:
+
+    def recognize_planner_page_structure(self, context: ProcessingContext, regions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Run planner.md ROI stages with real pixel coordinates and merge results."""
+        stage_specs = [
+            ("shape", {"header", "footer", "container_group", "card_group", "diagram_region"}, SHAPE_ROI_PROMPT_TEMPLATE),
+            ("asset", {"image_region", "icon_logo_region", "complex_visual_region"}, ASSET_ROI_PROMPT_TEMPLATE),
+            ("table", {"table_region"}, TABLE_ROI_PROMPT_TEMPLATE),
+            ("chart", {"chart_region"}, CHART_ROI_PROMPT_TEMPLATE),
+            ("diagram", {"diagram_region"}, DIAGRAM_ROI_PROMPT_TEMPLATE),
+        ]
+        all_items: List[Dict[str, Any]] = []
+        stage_results: Dict[str, Any] = {}
+        for stage_name, region_types, template in stage_specs:
+            stage_items: List[Dict[str, Any]] = []
+            for region in regions:
+                if region.get("type") not in region_types:
+                    continue
+                roi = self._crop_planner_roi(context, region, stage_name)
+                if not roi:
+                    continue
+                prompt = build_roi_prompt(
+                    template,
+                    region,
+                    roi["width"],
+                    roi["height"],
+                    ocr_json=json.dumps(self._ocr_blocks_in_region(context, region), ensure_ascii=False),
+                )
+                try:
+                    data = self._parse_json_response_with_debug(
+                        self.client.analyze_image(roi["path"], prompt),
+                        f"planner_{stage_name}_{region.get('id', 'region')}",
+                    )
+                except Exception as exc:
+                    print(f"[VLMEnhancer] planner {stage_name} ROI skipped: {exc}", flush=True)
+                    continue
+                items = self._planner_items_from_stage(stage_name, data)
+                for item in items:
+                    mapped = self._map_roi_item_to_page(item, region, roi, stage_name)
+                    if mapped:
+                        stage_items.append(mapped)
+            all_items.extend(stage_items)
+            stage_results[stage_name] = {"count": len(stage_items), "items": stage_items}
+            self._write_artifact(context, f"planner_{stage_name}_elements.json", stage_results[stage_name])
+        return {"recognized": bool(all_items), "items": all_items, "stages": stage_results, "raw_count": len(all_items)}
+
+    def _crop_planner_roi(self, context: ProcessingContext, region: Dict[str, Any], stage_name: str) -> Optional[Dict[str, Any]]:
+        from PIL import Image
+        bbox = region.get("pixel_bbox") or region.get("bbox") or {}
+        x = int(max(0, round(float(bbox.get("x", 0) or 0))))
+        y = int(max(0, round(float(bbox.get("y", 0) or 0))))
+        w = int(max(1, round(float(bbox.get("width", 0) or 0))))
+        h = int(max(1, round(float(bbox.get("height", 0) or 0))))
+        with Image.open(context.image_path) as img:
+            x2 = min(img.width, x + w)
+            y2 = min(img.height, y + h)
+            if x2 <= x or y2 <= y:
+                return None
+            crop = img.convert("RGB").crop((x, y, x2, y2))
+            crop_dir = f"{context.output_dir}/planner_rois/{stage_name}"
+            import os
+            os.makedirs(crop_dir, exist_ok=True)
+            safe_id = str(region.get("id") or "region").replace("/", "_")
+            path = f"{crop_dir}/{safe_id}.png"
+            crop.save(path)
+        return {"path": path, "x": x, "y": y, "width": x2 - x, "height": y2 - y}
+
+    @staticmethod
+    def _planner_items_from_stage(stage_name: str, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if not isinstance(data, dict):
+            return []
+        if stage_name == "diagram":
+            items = []
+            for key in ("nodes", "connectors", "elements"):
+                values = data.get(key)
+                if isinstance(values, list):
+                    items.extend(item for item in values if isinstance(item, dict))
+            return items
+        if stage_name in {"table", "chart"} and "elements" not in data:
+            item = dict(data)
+            item.setdefault("type", stage_name)
+            item.setdefault("id", f"{stage_name}_001")
+            return [item]
+        return VLMStructureMixin._vlm_structure_items(data)
+
+    def _map_roi_item_to_page(self, item: Dict[str, Any], region: Dict[str, Any], roi: Dict[str, Any], stage_name: str) -> Optional[Dict[str, Any]]:
+        mapped = dict(item)
+        bbox = self._extract_vlm_bbox(mapped)
+        if bbox is None:
+            if stage_name in {"table", "chart"}:
+                bbox = [0, 0, roi["width"], roi["height"]]
+            elif mapped.get("start_point") and mapped.get("end_point"):
+                points = [mapped.get("start_point"), mapped.get("end_point")]
+                xs = [float(p.get("x", 0)) for p in points if isinstance(p, dict)]
+                ys = [float(p.get("y", 0)) for p in points if isinstance(p, dict)]
+                if xs and ys:
+                    bbox = [min(xs), min(ys), max(xs), max(ys)]
+            if bbox is None:
+                return None
+        pixel = self._normalize_bbox(bbox, roi["width"], roi["height"])
+        if pixel is None:
+            return None
+        x1, y1, x2, y2 = pixel
+        mapped["bbox"] = {"x": roi["x"] + x1, "y": roi["y"] + y1, "width": x2 - x1, "height": y2 - y1}
+        mapped["pixel_bbox"] = mapped["bbox"]
+        mapped["coordinate_system"] = "pixel_original"
+        mapped["region_id"] = region.get("id")
+        mapped["source_stage"] = f"planner_{stage_name}"
+        mapped.setdefault("confidence", region.get("confidence", 0.7))
+        for point_key in ("start_point", "end_point", "start", "end", "arrow_start", "arrow_end"):
+            point = mapped.get(point_key)
+            if isinstance(point, dict):
+                mapped[point_key] = {"x": roi["x"] + float(point.get("x", 0) or 0), "y": roi["y"] + float(point.get("y", 0) or 0)}
+        return mapped
+
+    @staticmethod
+    def _ocr_blocks_in_region(context: ProcessingContext, region: Dict[str, Any]) -> List[Dict[str, Any]]:
+        bbox = region.get("pixel_bbox") or region.get("bbox") or {}
+        rx = float(bbox.get("x", 0) or 0)
+        ry = float(bbox.get("y", 0) or 0)
+        rw = float(bbox.get("width", 0) or 0)
+        rh = float(bbox.get("height", 0) or 0)
+        result = []
+        for block in (context.intermediate_results.get("ocr_text_blocks") or []):
+            geo = block.get("geometry") or {}
+            cx = float(geo.get("x", 0) or 0) + float(geo.get("width", 0) or 0) / 2
+            cy = float(geo.get("y", 0) or 0) + float(geo.get("height", 0) or 0) / 2
+            if rx <= cx <= rx + rw and ry <= cy <= ry + rh:
+                result.append(block)
+        return result
+
     def recognize_region_elements(self, context: ProcessingContext, regions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Stage 2: recognize elements inside known regions."""
         ocr_context = self._summarize_ocr_context(context, max_blocks=self.vlm_only_ocr_anchor_max_blocks)
@@ -68,13 +208,13 @@ class VLMStructureMixin:
             elem = by_id.get(edge.get("id"))
             if elem is None:
                 bbox = self._extract_vlm_bbox(edge)
-                normalized_bbox = self._normalize_bbox(bbox, 1000, 1000) if bbox is not None else None
-                if normalized_bbox is None:
+                pixel_bbox = self._structure_item_pixel_bbox(edge, bbox, context) if bbox is not None else None
+                if pixel_bbox is None:
                     continue
                 elem = ElementInfo(
                     id=next_id,
                     element_type=self._sanitize_type(edge.get("type")) or "connector",
-                    bbox=BoundingBox.from_list(self._scale_normalized_bbox(normalized_bbox, context.canvas_width, context.canvas_height)),
+                    bbox=BoundingBox.from_list(pixel_bbox),
                     score=self._confidence(edge),
                     source_prompt="vlm_connectors",
                 )
@@ -101,7 +241,7 @@ class VLMStructureMixin:
         return result
 
     def recognize_structure(self, context: ProcessingContext) -> Dict[str, Any]:
-        """Ask VLM to recognize the editable page structure without SAM3 candidates."""
+        """Ask VLM to recognize the editable page structure without segmentation candidates."""
         if not self.enabled or self.client is None:
             return {"recognized": False, "elements": [], "error": "multimodal VLM is disabled"}
         threshold = float(self.thresholds.get("vlm_structure_confidence", 0.60))
@@ -203,14 +343,9 @@ class VLMStructureMixin:
         context: ProcessingContext,
     ) -> Optional[List[int]]:
         """Return an original-pixel bbox for either pixel or legacy normalized items."""
-        if item.get("coordinate_system") == "pixel_original" or item.get("pixel_bbox"):
-            pixel_bbox = item.get("pixel_bbox") or item.get("bbox")
-            converted = self._bbox_from_dict(pixel_bbox) if isinstance(pixel_bbox, dict) else self._bbox_from_list(pixel_bbox)
-            return self._normalize_bbox(converted, context.canvas_width, context.canvas_height) if converted is not None else None
-        normalized_bbox = self._normalize_bbox(bbox, 1000, 1000)
-        if normalized_bbox is None:
-            return None
-        return self._scale_normalized_bbox(normalized_bbox, context.canvas_width, context.canvas_height)
+        pixel_bbox = item.get("pixel_bbox") or item.get("bbox") or bbox
+        converted = self._bbox_from_dict(pixel_bbox) if isinstance(pixel_bbox, dict) else self._bbox_from_list(pixel_bbox)
+        return self._normalize_bbox(converted, context.canvas_width, context.canvas_height) if converted is not None else None
 
     @staticmethod
     def _vlm_structure_items(data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -475,14 +610,7 @@ class VLMStructureMixin:
             point = item.get(primary) or item.get(fallback)
             normalized_point = self._normalize_point(point)
             if normalized_point is not None:
-                setattr(
-                    elem,
-                    field_name,
-                    (
-                        normalized_point[0] * max(1, int(canvas_width or 1000)) / 1000,
-                        normalized_point[1] * max(1, int(canvas_height or 1000)) / 1000,
-                    ),
-                )
+                setattr(elem, field_name, normalized_point)
 
     @staticmethod
     def _normalize_point(point: Any) -> Optional[tuple]:
@@ -490,8 +618,8 @@ class VLMStructureMixin:
             point = [point.get("x"), point.get("y")]
         if isinstance(point, list) and len(point) >= 2:
             try:
-                x = max(0.0, min(1000.0, float(point[0])))
-                y = max(0.0, min(1000.0, float(point[1])))
+                x = max(0.0, float(point[0]))
+                y = max(0.0, float(point[1]))
                 return x, y
             except (TypeError, ValueError):
                 return None

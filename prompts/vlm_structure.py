@@ -2,7 +2,7 @@
 
 _VLM_JSON_RULES = """
 输出必须是一个可被 json.loads 直接解析的 JSON 对象。不要输出 Markdown、解释、注释或额外文本。
-所有 bbox 均使用 0~1000 归一化坐标，格式为 {"x":left,"y":top,"width":w,"height":h}，整数且限制在 0~1000。
+所有 bbox 均使用当前输入图片的实际像素坐标，格式为 {"x":left,"y":top,"width":w,"height":h}，整数且不得超过当前输入图片宽高。不要输出归一化坐标。
 不确定的元素不要猜；每个返回项必须包含 confidence。
 """
 
@@ -12,8 +12,8 @@ VLM_PAGE_REGIONS_PROMPT_TEMPLATE = """
 请分析整张页面图片，只识别页面级结构和主要视觉区域。
 不要逐字识别文本，不要识别表格单元格，不要提取图表数据，不要识别小图标细节。
 
-坐标必须使用当前输入图片的像素坐标，不要使用 0~1000 归一化坐标。
-当前输入图片宽度：{image_width}px，高度：{image_height}px。
+坐标必须使用当前输入图片的实际像素坐标，不要使用归一化坐标。
+当前输入的原始图片宽度：{image_width}px，高度：{image_height}px。
 左上角为 (0,0)，右下角为 ({image_width},{image_height})。
 所有 bbox 的 x、y、width、height 都必须是基于这个宽高的像素整数。
 
@@ -113,3 +113,87 @@ JSON schema 示例：
 # Backward-compatible alias used by older code paths. The new implementation uses
 # the staged prompts above, but keeping this avoids breaking imports/tests.
 VLM_STRUCTURE_PROMPT = VLM_PAGE_REGIONS_PROMPT + "\n" + VLM_REGION_ELEMENTS_PROMPT
+
+
+ROI_PIXEL_RULES_TEMPLATE = """
+当前 ROI 图片宽度：{roi_width}px，高度：{roi_height}px。
+所有 bbox、start_point、end_point 都必须使用当前 ROI 图片的实际像素坐标：左上角 (0,0)，右下角 ({roi_width},{roi_height})。
+不要使用 0~1000 归一化坐标，不要输出百分比。
+输出必须是可被 json.loads 直接解析的 JSON 对象，不要输出 Markdown、解释、注释或额外文本。
+"""
+
+SHAPE_ROI_PROMPT_TEMPLATE = """
+你是 PPT 原生图形识别器。
+
+当前输入是一张 ROI 图片，ROI 类型：{region_type}，region_id：{region_id}。
+请只识别当前 ROI 内可用 draw.io/PPT 原生元素重建的图形，不要识别文字内容、照片、复杂插画或 Logo。
+{pixel_rules}
+
+需要识别的 type：container、shape、line、arrow。
+container subtype 可选：card、panel、section、button、tag、badge、tab、dialog、metric_card。
+shape subtype 可选：rectangle、rounded_rectangle、circle、ellipse、triangle、diamond、pill、chevron、hexagon、freeform_shape。
+line subtype 可选：horizontal_line、vertical_line、diagonal_line、divider、dashed_line、dotted_line。
+arrow subtype 可选：right_arrow、left_arrow、up_arrow、down_arrow、double_arrow、curved_arrow、connector_arrow、process_arrow。
+
+要求：
+1. 卡片、色块、按钮背景、标签底板优先识别为 container 或 shape。
+2. 普通分割线识别为 line；有方向或流程含义的连接线识别为 arrow。
+3. 每个元素输出 id、type、subtype、bbox、fill、stroke、corner_radius_estimate、shadow、rotation、editable_strategy、confidence。
+4. 箭头额外输出 start_point、end_point、arrow_head、arrow_tail。
+5. 不要把复杂图片或插画错误识别为 shape。
+
+输出格式：{"elements":[{"id":"shape_001","type":"container","subtype":"card","bbox":{"x":10,"y":20,"width":300,"height":120},"fill":{"type":"solid","color":"#FFFFFF","transparency":0},"stroke":{"color":"#E5E7EB","width":1,"dash":"solid"},"corner_radius_estimate":16,"shadow":{"enabled":false},"rotation":0,"editable_strategy":"native_shape","confidence":0.91}]}
+"""
+
+ASSET_ROI_PROMPT_TEMPLATE = """
+你是 PPT 视觉资产识别器。
+
+当前输入是一张 ROI 图片，ROI 类型：{region_type}，region_id：{region_id}。
+请识别当前 ROI 内的视觉资产，并判断它们在 draw.io/PPT 中最合适的重建方式。
+{pixel_rules}
+
+可选 type：image、icon、logo、decoration、complex_visual、unknown。
+要求：品牌标识优先识别为 logo；简单小型功能符号识别为 icon；照片、截图、地图、复杂插画识别为 image；无法稳定拆分的复杂区域识别为 complex_visual。输出 vectorizable、has_transparent_background、preserve_as_image、editable_strategy、confidence。不要输出文字内容。
+
+输出格式：{"elements":[{"id":"asset_001","type":"logo","subtype":"brand_logo","bbox":{"x":10,"y":20,"width":180,"height":80},"vectorizable":false,"has_transparent_background":true,"preserve_as_image":true,"editable_strategy":"cropped_image","confidence":0.87}]}
+"""
+
+TABLE_ROI_PROMPT_TEMPLATE = """
+你是 PPT 表格结构识别器。
+
+当前输入是一张表格 ROI 图片，region_id：{region_id}，并附带 OCR 结果。请识别表格结构，不要分析 ROI 外内容。
+{pixel_rules}
+OCR 输入：{ocr_json}
+
+任务：判断是否可重建为原生表格；若可以，识别 rows、columns、header_row、header_column、merged_cells、cells；OCR 文本内容优先，不要编造单元格文字。
+输出格式：{"table_reconstructable":true,"editable_strategy":"native_table","rows":4,"columns":3,"has_header_row":true,"has_header_column":false,"merged_cells":[],"cells":[],"confidence":0.85,"reason":null}
+"""
+
+CHART_ROI_PROMPT_TEMPLATE = """
+你是 PPT 图表结构识别器。
+
+当前输入是一张图表 ROI 图片，region_id：{region_id}。请只识别当前 ROI 内图表，不要识别 ROI 外内容。
+{pixel_rules}
+任务：判断图表类型、标题、图例、类别、系列、坐标轴、数据标签，以及 editable_strategy。数据无法可靠读取时不要编造数值。
+输出格式：{"chart_type":"bar_chart","title":null,"legend":[],"categories":[],"series":[],"axis":{},"editable_strategy":"image_fallback","data_reconstruction_confidence":0.0,"confidence":0.8,"reason":null}
+"""
+
+DIAGRAM_ROI_PROMPT_TEMPLATE = """
+你是 PPT 流程图与关系图识别器。
+
+当前输入是一张 Diagram ROI 图片，region_id：{region_id}。请识别当前 ROI 中的节点、连接线、箭头、标签和整体关系结构。
+{pixel_rules}
+要求：节点必须作为独立元素输出；连线必须作为 line 或 arrow 单独输出；箭头尽量关联 from_element_id 和 to_element_id；文本优先使用 OCR 结果。
+输出格式：{"diagram_type":"process_flow","flow_direction":"left_to_right","layout_pattern":"horizontal","nodes":[],"connectors":[],"confidence":0.82}
+"""
+
+def build_roi_prompt(template: str, region: dict, roi_width: int, roi_height: int, ocr_json: str = "[]") -> str:
+    pixel_rules = ROI_PIXEL_RULES_TEMPLATE.format(roi_width=max(1, int(roi_width or 1)), roi_height=max(1, int(roi_height or 1)))
+    return template.format(
+        region_id=region.get("id", "region"),
+        region_type=region.get("type", "unknown"),
+        roi_width=max(1, int(roi_width or 1)),
+        roi_height=max(1, int(roi_height or 1)),
+        pixel_rules=pixel_rules,
+        ocr_json=ocr_json,
+    )

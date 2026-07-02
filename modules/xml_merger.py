@@ -160,7 +160,7 @@ class XMLMerger(BaseProcessor):
         
         坐标缩放说明：
         - 文字处理使用原始图像，坐标基于原始尺寸
-        - SAM3/图形处理使用放大后的图像，坐标需要缩放回原始尺寸
+        - segmentation/图形处理使用放大后的图像，坐标需要缩放回原始尺寸
         """
         fragments = []
         
@@ -532,7 +532,7 @@ class XMLMerger(BaseProcessor):
         """
         合并图形XML和文字XML
         
-        这是最常用的合并场景：SAM3提取的图形 + OCR提取的文字
+        这是最常用的合并场景：segmentation提取的图形 + OCR提取的文字
         
         Args:
             shape_xml_path: 图形XML路径
