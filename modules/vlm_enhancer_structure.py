@@ -1,46 +1,13 @@
-"""Optional VLM enhancement passes for the image-to-diagram pipeline.
-
-The enhancer is deliberately conservative: every VLM call is behind config
-switches and failures fall back to the existing OCR/SAM3/CV pipeline.
-"""
+"""VLM structure recognition mixin."""
 
 from __future__ import annotations
 
 import json
-import os
-import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import ProcessingContext
 from .data_types import BoundingBox, ElementInfo
-from .sam3_info_extractor import PromptGroup
-from .vlm_client import create_vlm_client_from_config
-from prompts.vlm_structure import VLM_CONNECTOR_PROMPT, VLM_PAGE_REGIONS_PROMPT, VLM_REGION_ELEMENTS_PROMPT, VLM_STRUCTURE_PROMPT
-
-
-CANONICAL_TYPES = {
-    "icon",
-    "picture",
-    "logo",
-    "chart",
-    "rectangle",
-    "rounded rectangle",
-    "rounded_rectangle",
-    "circle",
-    "ellipse",
-    "cylinder",
-    "diamond",
-    "triangle",
-    "hexagon",
-    "container",
-    "arrow",
-    "connector",
-    "line",
-    "text",
-}
-
-
+from prompts.vlm_structure import VLM_CONNECTOR_PROMPT, VLM_REGION_ELEMENTS_PROMPT, VLM_STRUCTURE_PROMPT
 
 
 class VLMStructureMixin:
@@ -243,14 +210,14 @@ class VLMStructureMixin:
             prefix.append(background_item)
         for key in ("elements", "page_elements", "objects", "shapes", "items"):
             values = data.get(key)
-            items = VLMEnhancer._coerce_vlm_item_collection(values)
+            items = VLMStructureMixin._coerce_vlm_item_collection(values)
             if items:
                 return prefix + items
         page = data.get("page") or data.get("diagram") or data.get("structure")
         if isinstance(page, dict):
             for key in ("elements", "page_elements", "objects", "shapes", "items"):
                 values = page.get(key)
-                items = VLMEnhancer._coerce_vlm_item_collection(values)
+                items = VLMStructureMixin._coerce_vlm_item_collection(values)
                 if items:
                     return prefix + items
         return prefix
@@ -337,10 +304,10 @@ class VLMStructureMixin:
         if isinstance(bbox, list) and len(bbox) == 4:
             return bbox
         if isinstance(bbox, dict):
-            return VLMEnhancer._bbox_from_dict(bbox)
+            return VLMStructureMixin._bbox_from_dict(bbox)
         geometry = item.get("geometry") or item.get("position") or item.get("rect")
         if isinstance(geometry, dict):
-            return VLMEnhancer._bbox_from_dict(geometry)
+            return VLMStructureMixin._bbox_from_dict(geometry)
         coords = [item.get(key) for key in ("x1", "y1", "x2", "y2")]
         if all(value is not None for value in coords):
             return coords
