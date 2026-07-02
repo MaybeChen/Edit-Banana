@@ -190,8 +190,10 @@ export:
 
 # Recognition mode:
 # - sam3_first: existing OCR -> SAM3 -> VLM repair path.
-# - vlm_only: skip SAM3 and run staged VLM page-region, region-element,
-#   connector, attribute, and validation passes.
+# - layout_only / vlm_only: current planner flow; run full-page Layout VLM,
+#   write vlm_page_regions.json + overlay, then stop.
+# - vlm_only previously ran staged region-element/connector passes; those later
+#   planner steps are intentionally disabled until they are reimplemented.
 recognition:
   mode: "sam3_first"
   # In vlm_only mode, keep OCR text as anchors so VLM focuses on structure,
