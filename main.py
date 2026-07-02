@@ -12,7 +12,6 @@ warnings.filterwarnings('ignore', message=".*doesn't match a supported version.*
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 from modules import Sam3InfoExtractor, IconPictureProcessor, BasicShapeProcessor, MetricEvaluator, RefinementProcessor, VLMElementRefiner, VLMLayoutRefiner, VLMExportValidator, TextRestorer, ProcessingContext, ProcessingResult, ElementInfo, BoundingBox, LayerLevel, get_layer_level
-from modules.sam3_info_extractor import PromptGroup
 from modules.vlm_enhancer import VLMEnhancer
 TEXT_MODULE_AVAILABLE = TextRestorer is not None
 class _VLMProcessorAdapter:
@@ -62,6 +61,8 @@ class Pipeline:
             return
         if self._sam3_extractor is None:
             return
+        from modules.sam3_info_extractor import PromptGroup
+
         coarse_prompts = {PromptGroup.IMAGE: ['icon', 'picture'], PromptGroup.BASIC_SHAPE: ['shape', 'rectangle', 'rounded rectangle', 'circle', 'ellipse', 'diamond', 'triangle', 'hexagon', 'cylinder'], PromptGroup.ARROW: ['arrow', 'connector', 'line'], PromptGroup.BACKGROUND: ['background', 'container', 'panel']}
         for group, prompts in coarse_prompts.items():
             cfg = self._sam3_extractor.prompt_groups.get(group)
@@ -116,7 +117,7 @@ class Pipeline:
             vlm_config = self.config.get('multimodal') or {}
             self._vlm_export_validator = VLMExportValidator(vlm_config)
         return self._vlm_export_validator
-    def process_image(self, image_path: str, output_dir: str=None, with_refinement: bool=False, with_text: bool=True, groups: List[PromptGroup]=None) -> Optional[str]:
+    def process_image(self, image_path: str, output_dir: str=None, with_refinement: bool=False, with_text: bool=True, groups: Optional[List[Any]]=None) -> Optional[str]:
         print(f"\n{'=' * 60}")
         print(f'Processing: {image_path}')
         print(f"{'=' * 60}")
@@ -131,8 +132,8 @@ class Pipeline:
         context.intermediate_results['was_upscaled'] = False
         context.intermediate_results['upscale_factor'] = 1.0
         try:
-            if self._recognition_mode() == 'vlm_only':
-                return self._process_image_vlm_only(context, img_output_dir, img_stem)
+            if self._recognition_mode() in {'vlm_only', 'layout_only', 'vlm_layout'}:
+                return self._process_image_layout_only(context, img_output_dir)
             text_blocks = []
             if with_text and self.text_restorer is not None:
                 print('\n[1] PaddleOCR text extraction...')
@@ -228,6 +229,23 @@ class Pipeline:
             import traceback
             traceback.print_exc()
             return None
+
+    def _process_image_layout_only(self, context: ProcessingContext, img_output_dir: str) -> Optional[str]:
+        """Run the planner flow only through Step 1: full-page Layout VLM."""
+        print('\n[1] Full-page Layout VLM...')
+        layout_result = self.vlm_enhancer.recognize_page_regions(context)
+        layout_path = context.intermediate_results.get('vlm_page_regions.json') or os.path.join(img_output_dir, 'vlm_page_regions.json')
+        overlay_path = layout_result.get('overlay_path') or context.intermediate_results.get('vlm_page_regions_overlay')
+        print(f"   Layout regions: {len(layout_result.get('regions', []))}")
+        print(f'   Layout JSON: {layout_path}')
+        if overlay_path:
+            print(f'   Layout overlay: {overlay_path}')
+        if not layout_result.get('recognized'):
+            print(f"   Layout VLM warning: {layout_result.get('error', 'no regions recognized')}")
+        print('   Stopped after full-page Layout VLM (planner Step 1).')
+        print(f"\n{'=' * 60}\nDone.\n{'=' * 60}")
+        return layout_path
+
     def _process_image_vlm_only(self, context: ProcessingContext, img_output_dir: str, img_stem: str) -> Optional[str]:
         print('\n[1] VLM-only OCR anchors...')
         self._initialize_canvas_from_image(context)
@@ -715,7 +733,8 @@ def main():
     parser.add_argument('--refine', action='store_true', help='Enable quality evaluation and refinement')
     parser.add_argument('--no-text', action='store_true', help='Skip text step (no OCR)')
     parser.add_argument('--groups', nargs='+', choices=['image', 'arrow', 'shape', 'background'], help='Prompt groups to process (default: all)')
-    parser.add_argument('--vlm-only', action='store_true', help='Skip SAM3 and use VLM-only page structure recognition')
+    parser.add_argument('--vlm-only', action='store_true', help='Run current VLM planner flow and stop after full-page Layout VLM')
+    parser.add_argument('--layout-only', action='store_true', help='Run full-page Layout VLM and stop after writing JSON + overlay artifacts')
     parser.add_argument('--show-prompts', action='store_true', help='Show prompt config')
     args = parser.parse_args()
     if args.show_prompts:
@@ -723,11 +742,13 @@ def main():
         extractor.print_prompt_groups()
         return
     config = load_config()
-    if args.vlm_only:
-        config.setdefault('recognition', {})['mode'] = 'vlm_only'
+    if args.vlm_only or args.layout_only:
+        config.setdefault('recognition', {})['mode'] = 'layout_only'
     pipeline = Pipeline(config)
     groups = None
     if args.groups:
+        from modules.sam3_info_extractor import PromptGroup
+
         group_map = {'image': PromptGroup.IMAGE, 'arrow': PromptGroup.ARROW, 'shape': PromptGroup.BASIC_SHAPE, 'background': PromptGroup.BACKGROUND}
         groups = [group_map[g] for g in args.groups]
     output_dir = args.output or config.get('paths', {}).get('output_dir', './output')

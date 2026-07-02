@@ -85,14 +85,42 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
         """Stage 1: recognize only page skeleton and major layout regions."""
         threshold = float(self.thresholds.get("vlm_region_confidence", self.thresholds.get("vlm_structure_confidence", 0.60)))
         vlm_image_path = self._prepare_vlm_layout_image(context)
+        if not self.enabled or self.client is None:
+            result = {
+                "recognized": False,
+                "regions": [],
+                "error": "multimodal VLM is disabled",
+                "coordinate_system": "normalized_0_1000",
+                "vlm_image_path": vlm_image_path,
+                "original_image_path": context.image_path,
+                "original_size": {"width": context.canvas_width, "height": context.canvas_height},
+            }
+            overlay_path = self._save_vlm_page_regions_overlay(context, [])
+            result["overlay_path"] = overlay_path
+            context.intermediate_results["vlm_page_regions_overlay"] = overlay_path
+            self._write_artifact(context, "vlm_page_regions.json", result)
+            return result
         try:
             data = self._parse_json_response_with_debug(
                 self.client.analyze_image(vlm_image_path, VLM_PAGE_REGIONS_PROMPT),
                 "vlm_page_regions",
             )
         except Exception as exc:
+            result = {
+                "recognized": False,
+                "regions": [],
+                "error": str(exc),
+                "coordinate_system": "normalized_0_1000",
+                "vlm_image_path": vlm_image_path,
+                "original_image_path": context.image_path,
+                "original_size": {"width": context.canvas_width, "height": context.canvas_height},
+            }
+            overlay_path = self._save_vlm_page_regions_overlay(context, [])
+            result["overlay_path"] = overlay_path
+            context.intermediate_results["vlm_page_regions_overlay"] = overlay_path
+            self._write_artifact(context, "vlm_page_regions.json", result)
             print(f"[VLMEnhancer] VLM page region recognition skipped: {exc}", flush=True)
-            return {"recognized": False, "regions": [], "error": str(exc)}
+            return result
         raw_regions = data.get("regions", []) if isinstance(data.get("regions"), list) else []
         regions = []
         for idx, item in enumerate(raw_regions):
