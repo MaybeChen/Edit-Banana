@@ -123,10 +123,9 @@ class VLMStructureMixin:
             bbox = self._extract_vlm_bbox(item)
             if not new_type or bbox is None:
                 continue
-            normalized_bbox = self._normalize_bbox(bbox, 1000, 1000)
-            if normalized_bbox is None:
+            pixel_bbox = self._structure_item_pixel_bbox(item, bbox, context)
+            if pixel_bbox is None:
                 continue
-            pixel_bbox = self._scale_normalized_bbox(normalized_bbox, context.canvas_width, context.canvas_height)
             elem = ElementInfo(
                 id=len(elements),
                 element_type=new_type,
@@ -172,13 +171,13 @@ class VLMStructureMixin:
             bbox = self._extract_vlm_bbox(item)
             if not new_type or bbox is None:
                 continue
-            normalized_bbox = self._normalize_bbox(bbox, 1000, 1000)
-            if normalized_bbox is None:
+            pixel_bbox = self._structure_item_pixel_bbox(item, bbox, context)
+            if pixel_bbox is None:
                 continue
             elem = ElementInfo(
                 id=len(elements),
                 element_type=new_type,
-                bbox=BoundingBox.from_list(self._scale_normalized_bbox(normalized_bbox, context.canvas_width, context.canvas_height)),
+                bbox=BoundingBox.from_list(pixel_bbox),
                 score=self._confidence(item),
                 source_prompt=source_prompt,
             )
@@ -196,6 +195,22 @@ class VLMStructureMixin:
             elem.processing_notes.append(source_prompt)
             elements.append(elem)
         return elements
+
+    def _structure_item_pixel_bbox(
+        self,
+        item: Dict[str, Any],
+        bbox: List[Any],
+        context: ProcessingContext,
+    ) -> Optional[List[int]]:
+        """Return an original-pixel bbox for either pixel or legacy normalized items."""
+        if item.get("coordinate_system") == "pixel_original" or item.get("pixel_bbox"):
+            pixel_bbox = item.get("pixel_bbox") or item.get("bbox")
+            converted = self._bbox_from_dict(pixel_bbox) if isinstance(pixel_bbox, dict) else self._bbox_from_list(pixel_bbox)
+            return self._normalize_bbox(converted, context.canvas_width, context.canvas_height) if converted is not None else None
+        normalized_bbox = self._normalize_bbox(bbox, 1000, 1000)
+        if normalized_bbox is None:
+            return None
+        return self._scale_normalized_bbox(normalized_bbox, context.canvas_width, context.canvas_height)
 
     @staticmethod
     def _vlm_structure_items(data: Dict[str, Any]) -> List[Dict[str, Any]]:

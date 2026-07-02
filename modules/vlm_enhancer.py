@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from .base import ProcessingContext
 from .vlm_client import create_vlm_client_from_config
-from prompts.vlm_structure import VLM_PAGE_REGIONS_PROMPT
+from prompts.vlm_structure import build_vlm_page_regions_prompt
 
 from .vlm_enhancer_core import VLMCoreMixin
 from .vlm_enhancer_structure import VLMStructureMixin
@@ -129,7 +129,7 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
                 "recognized": False,
                 "regions": [],
                 "error": "multimodal VLM is disabled",
-                "coordinate_system": "normalized_0_1000",
+                "coordinate_system": "pixel_original",
                 "vlm_image_path": vlm_image_path,
                 "original_image_path": context.image_path,
                 "original_size": {"width": context.canvas_width, "height": context.canvas_height},
@@ -140,8 +140,10 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
             self._write_artifact(context, "vlm_page_regions.json", result)
             return result
         try:
+            vlm_size = context.intermediate_results.get("vlm_layout_image_size") or {"width": context.canvas_width, "height": context.canvas_height}
+            prompt = build_vlm_page_regions_prompt(vlm_size.get("width", context.canvas_width), vlm_size.get("height", context.canvas_height))
             data = self._parse_json_response_with_debug(
-                self.client.analyze_image(vlm_image_path, VLM_PAGE_REGIONS_PROMPT),
+                self.client.analyze_image(vlm_image_path, prompt),
                 "vlm_page_regions",
             )
         except Exception as exc:
@@ -149,7 +151,7 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
                 "recognized": False,
                 "regions": [],
                 "error": str(exc),
-                "coordinate_system": "normalized_0_1000",
+                "coordinate_system": "pixel_original",
                 "vlm_image_path": vlm_image_path,
                 "original_image_path": context.image_path,
                 "original_size": {"width": context.canvas_width, "height": context.canvas_height},
@@ -177,12 +179,12 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
                 dropped_regions.append({"index": idx, "reason": "unsupported_type", "type": item.get("type")})
                 continue
             bbox = self._extract_vlm_bbox(item)
-            normalized_bbox = self._normalize_bbox(bbox, 1000, 1000) if bbox is not None else None
-            if normalized_bbox is None:
+            pixel_bbox = self._vlm_bbox_to_original_pixel_dict(bbox, context) if bbox is not None else None
+            if pixel_bbox is None:
                 dropped_regions.append({"index": idx, "reason": "invalid_bbox"})
                 continue
-            width = normalized_bbox[2] - normalized_bbox[0]
-            height = normalized_bbox[3] - normalized_bbox[1]
+            width = pixel_bbox["width"]
+            height = pixel_bbox["height"]
             area = width * height
             if area < min_area and region_type != "header":
                 dropped_regions.append({"index": idx, "reason": "too_small", "type": region_type, "area": area})
@@ -190,8 +192,9 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
             region = dict(item)
             region["type"] = region_type
             region.setdefault("id", f"region_{idx + 1:03d}")
-            region["bbox"] = {"x": normalized_bbox[0], "y": normalized_bbox[1], "width": width, "height": height}
-            region["pixel_bbox"] = self._normalized_bbox_to_pixel_dict(region["bbox"], context.canvas_width, context.canvas_height)
+            region["bbox"] = pixel_bbox
+            region["pixel_bbox"] = pixel_bbox
+            region["coordinate_system"] = "pixel_original"
             region["area"] = area
             regions.append(region)
         if len(regions) > max_regions:
@@ -201,7 +204,7 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
                 for region in regions[max_regions:]
             )
             regions = regions[:max_regions]
-        regions.sort(key=lambda region: (region["bbox"]["y"], region["bbox"]["x"]))
+        regions.sort(key=lambda region: (region["pixel_bbox"]["y"], region["pixel_bbox"]["x"]))
         result = {
             "recognized": bool(regions),
             "page_aspect_ratio_estimate": data.get("page_aspect_ratio_estimate"),
@@ -212,7 +215,7 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
             "raw_count": len(raw_regions),
             "dropped_count": len(dropped_regions),
             "dropped_regions": dropped_regions,
-            "coordinate_system": "normalized_0_1000",
+            "coordinate_system": "pixel_original",
             "vlm_image_path": vlm_image_path,
             "original_image_path": context.image_path,
             "original_size": {"width": context.canvas_width, "height": context.canvas_height},
@@ -267,6 +270,24 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
         y2 = round((y + bbox_height) * height / 1000)
         return {"x": x1, "y": y1, "width": max(0, x2 - x1), "height": max(0, y2 - y1)}
 
+    def _vlm_bbox_to_original_pixel_dict(self, bbox: List[Any], context: ProcessingContext) -> Optional[Dict[str, int]]:
+        normalized_bbox = self._normalize_bbox(
+            bbox,
+            (context.intermediate_results.get("vlm_layout_image_size") or {}).get("width", context.canvas_width),
+            (context.intermediate_results.get("vlm_layout_image_size") or {}).get("height", context.canvas_height),
+        )
+        if normalized_bbox is None:
+            return None
+        vlm_size = context.intermediate_results.get("vlm_layout_image_size") or {"width": context.canvas_width, "height": context.canvas_height}
+        scale_x = max(1, int(context.canvas_width or 1)) / max(1, int(vlm_size.get("width") or 1))
+        scale_y = max(1, int(context.canvas_height or 1)) / max(1, int(vlm_size.get("height") or 1))
+        x1, y1, x2, y2 = normalized_bbox
+        ox1 = round(x1 * scale_x)
+        oy1 = round(y1 * scale_y)
+        ox2 = round(x2 * scale_x)
+        oy2 = round(y2 * scale_y)
+        return {"x": ox1, "y": oy1, "width": max(0, ox2 - ox1), "height": max(0, oy2 - oy1)}
+
     def _save_vlm_page_regions_overlay(self, context: ProcessingContext, regions: List[Dict[str, Any]]) -> str:
         """Draw layout regions on the original image using real pixel coordinates."""
         from PIL import Image, ImageDraw, ImageFont
@@ -276,7 +297,7 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
         draw = ImageDraw.Draw(canvas)
         font = ImageFont.load_default()
         for region in regions:
-            pixel_bbox = region.get("pixel_bbox") or self._normalized_bbox_to_pixel_dict(region.get("bbox", {}), canvas.width, canvas.height)
+            pixel_bbox = region.get("pixel_bbox") or region.get("bbox") or self._normalized_bbox_to_pixel_dict(region.get("bbox", {}), canvas.width, canvas.height)
             x1, y1 = int(pixel_bbox["x"]), int(pixel_bbox["y"])
             x2, y2 = x1 + int(pixel_bbox["width"]), y1 + int(pixel_bbox["height"])
             draw.rectangle([x1, y1, x2, y2], outline="#ff3b30", width=3)

@@ -6,14 +6,16 @@ _VLM_JSON_RULES = """
 不确定的元素不要猜；每个返回项必须包含 confidence。
 """
 
-VLM_PAGE_REGIONS_PROMPT = """
+VLM_PAGE_REGIONS_PROMPT_TEMPLATE = """
 你是 PPT 页面布局分析器。
 
 请分析整张页面图片，只识别页面级结构和主要视觉区域。
 不要逐字识别文本，不要识别表格单元格，不要提取图表数据，不要识别小图标细节。
 
-坐标使用 normalized_0_1000：
-左上角为 (0,0)，右下角为 (1000,1000)。
+坐标必须使用当前输入图片的像素坐标，不要使用 0~1000 归一化坐标。
+当前输入图片宽度：{image_width}px，高度：{image_height}px。
+左上角为 (0,0)，右下角为 ({image_width},{image_height})。
+所有 bbox 的 x、y、width、height 都必须是基于这个宽高的像素整数。
 
 请识别以下区域类型：
 - background
@@ -60,13 +62,29 @@ VLM_PAGE_REGIONS_PROMPT = """
     {
       "id": "region_001",
       "type": "header",
-      "bbox": {"x": 0, "y": 0, "width": 1000, "height": 140},
+      "bbox": {"x": 0, "y": 0, "width": {image_width}, "height": 120},
       "confidence": 0.95
     }
   ],
   "reading_order": ["region_001"]
 }
 """
+
+
+def build_vlm_page_regions_prompt(image_width: int, image_height: int) -> str:
+    """Build a Layout VLM prompt using actual input-image pixel dimensions."""
+    width = max(1, int(image_width or 1))
+    height = max(1, int(image_height or 1))
+    return (
+        VLM_PAGE_REGIONS_PROMPT_TEMPLATE
+        .replace("{image_width}", str(width))
+        .replace("{image_height}", str(height))
+    )
+
+
+# Backward-compatible constant for older imports; runtime code should call
+# build_vlm_page_regions_prompt with the actual VLM image dimensions.
+VLM_PAGE_REGIONS_PROMPT = build_vlm_page_regions_prompt(1000, 1000)
 
 VLM_REGION_ELEMENTS_PROMPT = f"""
 你是局部页面元素识别器。输入是一张完整页面图片，以及需要重点检查的 regions 列表。
