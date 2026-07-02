@@ -58,7 +58,7 @@ class VLMCoreMixin:
                 text = choices[0].get("text") if isinstance(choices[0], dict) else None
                 if isinstance(text, str):
                     return text
-            if any(key in response for key in ("image", "shape", "arrow", "background", "elements", "edges", "text_blocks", "score", "repairs")):
+            if any(key in response for key in ("image", "shape", "arrow", "background", "regions", "page", "layout_pattern", "page_structure", "elements", "edges", "text_blocks", "score", "repairs")):
                 return json.dumps(response, ensure_ascii=False)
         return ""
 

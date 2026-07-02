@@ -19,6 +19,45 @@ from .vlm_enhancer_structure import VLMStructureMixin
 from .vlm_enhancer_refinement import VLMRefinementMixin
 from .vlm_enhancer_text import VLMTextPromptMixin
 
+PAGE_REGION_TYPES = {
+    "background",
+    "header",
+    "footer",
+    "sidebar",
+    "main_content",
+    "container_group",
+    "card_group",
+    "image_region",
+    "icon_logo_region",
+    "table_region",
+    "chart_region",
+    "diagram_region",
+    "complex_visual_region",
+}
+
+PAGE_REGION_TYPE_ALIASES = {
+    "title": "header",
+    "page_title": "header",
+    "top_bar": "header",
+    "left_panel": "sidebar",
+    "left_sidebar": "sidebar",
+    "navigation": "sidebar",
+    "body": "main_content",
+    "content": "main_content",
+    "center": "main_content",
+    "canvas": "diagram_region",
+    "diagram": "diagram_region",
+    "flowchart": "diagram_region",
+    "agent_diagram": "diagram_region",
+    "card_list": "card_group",
+    "cards": "card_group",
+    "steps": "card_group",
+    "key_issues": "card_group",
+    "requirements": "card_group",
+    "summary": "footer",
+    "bottom_bar": "footer",
+}
+
 
 class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefinementMixin):
     """Runs optional VLM prompt, element, region, layout, and export passes."""
@@ -123,18 +162,46 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
             return result
         raw_regions = data.get("regions", []) if isinstance(data.get("regions"), list) else []
         regions = []
+        dropped_regions = []
+        min_area = float(self.thresholds.get("vlm_region_min_area", 12000) or 12000)
+        max_regions = int(self.config.get("vlm_page_region_max_items", 10) or 10)
         for idx, item in enumerate(raw_regions):
-            if not isinstance(item, dict) or self._confidence(item) < threshold:
+            if not isinstance(item, dict):
+                dropped_regions.append({"index": idx, "reason": "not_object"})
+                continue
+            if self._confidence(item) < threshold:
+                dropped_regions.append({"index": idx, "reason": "low_confidence", "confidence": self._confidence(item)})
+                continue
+            region_type = self._normalize_page_region_type(item.get("type"))
+            if not region_type:
+                dropped_regions.append({"index": idx, "reason": "unsupported_type", "type": item.get("type")})
                 continue
             bbox = self._extract_vlm_bbox(item)
             normalized_bbox = self._normalize_bbox(bbox, 1000, 1000) if bbox is not None else None
             if normalized_bbox is None:
+                dropped_regions.append({"index": idx, "reason": "invalid_bbox"})
+                continue
+            width = normalized_bbox[2] - normalized_bbox[0]
+            height = normalized_bbox[3] - normalized_bbox[1]
+            area = width * height
+            if area < min_area and region_type != "header":
+                dropped_regions.append({"index": idx, "reason": "too_small", "type": region_type, "area": area})
                 continue
             region = dict(item)
+            region["type"] = region_type
             region.setdefault("id", f"region_{idx + 1:03d}")
-            region["bbox"] = {"x": normalized_bbox[0], "y": normalized_bbox[1], "width": normalized_bbox[2] - normalized_bbox[0], "height": normalized_bbox[3] - normalized_bbox[1]}
+            region["bbox"] = {"x": normalized_bbox[0], "y": normalized_bbox[1], "width": width, "height": height}
             region["pixel_bbox"] = self._normalized_bbox_to_pixel_dict(region["bbox"], context.canvas_width, context.canvas_height)
+            region["area"] = area
             regions.append(region)
+        if len(regions) > max_regions:
+            regions.sort(key=lambda region: region.get("area", 0), reverse=True)
+            dropped_regions.extend(
+                {"id": region.get("id"), "reason": "over_max_regions", "area": region.get("area", 0)}
+                for region in regions[max_regions:]
+            )
+            regions = regions[:max_regions]
+        regions.sort(key=lambda region: (region["bbox"]["y"], region["bbox"]["x"]))
         result = {
             "recognized": bool(regions),
             "page_aspect_ratio_estimate": data.get("page_aspect_ratio_estimate"),
@@ -143,6 +210,8 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
             "regions": regions,
             "reading_order": data.get("reading_order", []),
             "raw_count": len(raw_regions),
+            "dropped_count": len(dropped_regions),
+            "dropped_regions": dropped_regions,
             "coordinate_system": "normalized_0_1000",
             "vlm_image_path": vlm_image_path,
             "original_image_path": context.image_path,
@@ -179,6 +248,12 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
         context.intermediate_results["vlm_layout_image_path"] = vlm_path
         context.intermediate_results["vlm_layout_image_size"] = vlm_size
         return vlm_path
+
+    @staticmethod
+    def _normalize_page_region_type(value: Any) -> Optional[str]:
+        normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+        normalized = PAGE_REGION_TYPE_ALIASES.get(normalized, normalized)
+        return normalized if normalized in PAGE_REGION_TYPES else None
 
     @staticmethod
     def _normalized_bbox_to_pixel_dict(bbox: Dict[str, Any], width: int, height: int) -> Dict[str, int]:
