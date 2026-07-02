@@ -188,12 +188,20 @@ DIAGRAM_ROI_PROMPT_TEMPLATE = """
 """
 
 def build_roi_prompt(template: str, region: dict, roi_width: int, roi_height: int, ocr_json: str = "[]") -> str:
-    pixel_rules = ROI_PIXEL_RULES_TEMPLATE.format(roi_width=max(1, int(roi_width or 1)), roi_height=max(1, int(roi_height or 1)))
-    return template.format(
-        region_id=region.get("id", "region"),
-        region_type=region.get("type", "unknown"),
-        roi_width=max(1, int(roi_width or 1)),
-        roi_height=max(1, int(roi_height or 1)),
-        pixel_rules=pixel_rules,
-        ocr_json=ocr_json,
+    """Fill ROI prompt placeholders without treating JSON examples as format fields."""
+    width = max(1, int(roi_width or 1))
+    height = max(1, int(roi_height or 1))
+    pixel_rules = (
+        ROI_PIXEL_RULES_TEMPLATE
+        .replace("{roi_width}", str(width))
+        .replace("{roi_height}", str(height))
+    )
+    return (
+        template
+        .replace("{region_id}", str(region.get("id", "region")))
+        .replace("{region_type}", str(region.get("type", "unknown")))
+        .replace("{roi_width}", str(width))
+        .replace("{roi_height}", str(height))
+        .replace("{pixel_rules}", pixel_rules)
+        .replace("{ocr_json}", ocr_json)
     )
