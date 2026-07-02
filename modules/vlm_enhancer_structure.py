@@ -1,46 +1,13 @@
-"""Optional VLM enhancement passes for the image-to-diagram pipeline.
-
-The enhancer is deliberately conservative: every VLM call is behind config
-switches and failures fall back to the existing OCR/SAM3/CV pipeline.
-"""
+"""VLM structure recognition mixin."""
 
 from __future__ import annotations
 
 import json
-import os
-import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import ProcessingContext
 from .data_types import BoundingBox, ElementInfo
-from .sam3_info_extractor import PromptGroup
-from .vlm_client import create_vlm_client_from_config
-from prompts.vlm_structure import VLM_CONNECTOR_PROMPT, VLM_PAGE_REGIONS_PROMPT, VLM_REGION_ELEMENTS_PROMPT, VLM_STRUCTURE_PROMPT
-
-
-CANONICAL_TYPES = {
-    "icon",
-    "picture",
-    "logo",
-    "chart",
-    "rectangle",
-    "rounded rectangle",
-    "rounded_rectangle",
-    "circle",
-    "ellipse",
-    "cylinder",
-    "diamond",
-    "triangle",
-    "hexagon",
-    "container",
-    "arrow",
-    "connector",
-    "line",
-    "text",
-}
-
-
+from prompts.vlm_structure import VLM_CONNECTOR_PROMPT, VLM_REGION_ELEMENTS_PROMPT, VLM_STRUCTURE_PROMPT
 
 
 class VLMStructureMixin:
