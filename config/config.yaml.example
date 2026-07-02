@@ -150,6 +150,9 @@ multimodal:
   response_log_chars: 0
   max_elements_for_vlm: 80
   vlm_only_region_max_items: 20
+  # Maximum coarse page regions kept from Step 1 Layout VLM. Keep this above
+  # 10 so nested parent/child ROIs (e.g. section + card_group) are not dropped.
+  vlm_page_region_max_items: 15
   vlm_only_ocr_anchor_max_blocks: 30
   # Force SAM3 back to coarse recall prompts; VLM/CV fill detailed attributes later.
   coarse_sam_prompts: true
