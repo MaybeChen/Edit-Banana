@@ -210,14 +210,14 @@ class VLMStructureMixin:
             prefix.append(background_item)
         for key in ("elements", "page_elements", "objects", "shapes", "items"):
             values = data.get(key)
-            items = VLMEnhancer._coerce_vlm_item_collection(values)
+            items = VLMStructureMixin._coerce_vlm_item_collection(values)
             if items:
                 return prefix + items
         page = data.get("page") or data.get("diagram") or data.get("structure")
         if isinstance(page, dict):
             for key in ("elements", "page_elements", "objects", "shapes", "items"):
                 values = page.get(key)
-                items = VLMEnhancer._coerce_vlm_item_collection(values)
+                items = VLMStructureMixin._coerce_vlm_item_collection(values)
                 if items:
                     return prefix + items
         return prefix
@@ -304,10 +304,10 @@ class VLMStructureMixin:
         if isinstance(bbox, list) and len(bbox) == 4:
             return bbox
         if isinstance(bbox, dict):
-            return VLMEnhancer._bbox_from_dict(bbox)
+            return VLMStructureMixin._bbox_from_dict(bbox)
         geometry = item.get("geometry") or item.get("position") or item.get("rect")
         if isinstance(geometry, dict):
-            return VLMEnhancer._bbox_from_dict(geometry)
+            return VLMStructureMixin._bbox_from_dict(geometry)
         coords = [item.get(key) for key in ("x1", "y1", "x2", "y2")]
         if all(value is not None for value in coords):
             return coords
