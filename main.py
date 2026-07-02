@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore', message=".*doesn't match a supported version.*
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
-from modules import TextRestorer, ProcessingContext, ElementInfo
+from modules import TextRestorer, ProcessingContext, ElementInfo, IconPictureProcessor, BasicShapeProcessor
 from modules.vlm_enhancer import VLMEnhancer
 
 TEXT_MODULE_AVAILABLE = TextRestorer is not None
@@ -62,6 +62,8 @@ class Pipeline:
         self.config = config or load_config()
         self._text_restorer = None
         self._vlm_enhancer = None
+        self._icon_processor = None
+        self._shape_processor = None
 
     @property
     def text_restorer(self):
@@ -80,6 +82,19 @@ class Pipeline:
         if self._vlm_enhancer is None:
             self._vlm_enhancer = VLMEnhancer(self.config)
         return self._vlm_enhancer
+
+    @property
+    def icon_processor(self) -> IconPictureProcessor:
+        if self._icon_processor is None:
+            rmbg_cfg = self.config.get('rmbg') or {}
+            self._icon_processor = IconPictureProcessor(rmbg_model_path=rmbg_cfg.get('model_path'))
+        return self._icon_processor
+
+    @property
+    def shape_processor(self) -> BasicShapeProcessor:
+        if self._shape_processor is None:
+            self._shape_processor = BasicShapeProcessor()
+        return self._shape_processor
 
     def process_image(self, image_path: str, output_dir: str = None, with_text: bool = True) -> Optional[str]:
         print(f"\n{'=' * 60}")
@@ -139,7 +154,17 @@ class Pipeline:
                 self._save_json(os.path.join(img_output_dir, 'vlm_element_attributes.json'), attr_result)
                 print(f"   VLM element attributes: {attr_result.get('updated', 0)} updated")
 
-            print('\n[5] DrawIO generation...')
+                print('\n[5] Icon/image + shape processing...')
+                icon_result = self.icon_processor.process(context)
+                print(f"   Icons/images: {icon_result.metadata.get('processed_count', 0)}")
+                shape_result = self.shape_processor.process(context)
+                print(f"   Shapes: {shape_result.metadata.get('processed_count', 0)}")
+
+                layout_result = self.vlm_enhancer.refine_layout(context)
+                if layout_result.get('updated'):
+                    print(f"   VLM layout refinements: {layout_result.get('updated')}")
+
+            print('\n[6] DrawIO generation...')
             drawio_xml = self._generate_drawio_xml(context, text_blocks)
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(drawio_xml)
@@ -210,6 +235,16 @@ class Pipeline:
 
     def _add_element_cell(self, root: ET.Element, elem: ElementInfo, cell_id: int) -> int:
         elem_type = str(elem.element_type or 'rectangle').lower()
+        if elem.has_xml():
+            try:
+                cell = ET.fromstring(elem.xml_fragment)
+                cell.set('id', str(cell_id))
+                cell.set('parent', '1')
+                root.append(cell)
+                return cell_id + 1
+            except ET.ParseError:
+                pass
+
         if elem_type == 'text':
             meta = getattr(elem, 'vlm_item', {}) or {}
             text = meta.get('content') or meta.get('text') or meta.get('label') or ''
