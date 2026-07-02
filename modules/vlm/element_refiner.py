@@ -1,7 +1,7 @@
-"""VLM-based refinement for SAM3 element classifications.
+"""VLM-based refinement for segmentation element classifications.
 
-The refiner crops each selected SAM3 element from the source image, sends the
-local crop plus SAM3's current candidate type to the shared VLM client, and only
+The refiner crops each selected segmentation element from the source image, sends the
+local crop plus segmentation's current candidate type to the shared VLM client, and only
 commits the VLM result when the returned confidence is above the configured
 threshold.  It writes the normalized standard element type and line style back to
 ``ElementInfo`` for downstream processors.
@@ -78,7 +78,7 @@ LINE_STYLE_ALIASES = {
 
 
 class VLMElementRefiner(BaseProcessor):
-    """Refine SAM3 element types with localized VLM classification."""
+    """Refine segmentation element types with localized VLM classification."""
 
     CONFUSING_TYPES = {
         "unknown",
@@ -112,7 +112,7 @@ class VLMElementRefiner(BaseProcessor):
         self.use_masked_crop = bool(self.vlm_config.get("use_masked_crop", True))
 
     def process(self, context: ProcessingContext) -> ProcessingResult:
-        self._log("Refining SAM3 element types with VLM")
+        self._log("Refining segmentation element types with VLM")
         if not context.image_path or not os.path.exists(context.image_path):
             return ProcessingResult(success=False, elements=context.elements, error_message="Invalid image path")
 
@@ -191,14 +191,14 @@ class VLMElementRefiner(BaseProcessor):
         standard_types = ", ".join(sorted(STANDARD_TYPES))
         return (
             "Classify this cropped element from a diagram/UI screenshot. "
-            "Use the current SAM3 candidate type as context, but correct it when the crop shows another standard type. "
+            "Use the current segmentation candidate type as context, but correct it when the crop shows another standard type. "
             "Return STRICT JSON only with schema: "
             '{"element_type": string, "line_style": string|null, "confidence": number, "reason": string}. '
             f"element_type must be one of: {standard_types}. "
             "line_style must be solid, dashed, dotted, or null. "
             "Prefer connector for a line without arrowheads; arrow for a directed line; "
             "section_panel/title_bar for grouping panels; picture for photo-like raster content; icon for symbolic graphics. "
-            f"Current SAM3 candidate type: {elem.element_type}; bbox: {elem.bbox.to_list()}; SAM3 score: {elem.score}."
+            f"Current segmentation candidate type: {elem.element_type}; bbox: {elem.bbox.to_list()}; segmentation score: {elem.score}."
         )
 
     def _apply_vlm_output(self, elem: ElementInfo, output: Dict[str, Any]) -> bool:
@@ -252,7 +252,7 @@ def _safe_float(value: Any, default: float) -> float:
 
 
 def _apply_mask_to_crop(crop: Image.Image, mask: Any, crop_box: tuple[int, int, int, int]) -> Image.Image:
-    """White out pixels outside the SAM3 mask when mask dimensions are usable."""
+    """White out pixels outside the segmentation mask when mask dimensions are usable."""
     try:
         import numpy as np
 

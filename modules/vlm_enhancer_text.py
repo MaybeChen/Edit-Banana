@@ -127,11 +127,11 @@ class VLMTextPromptMixin:
         return result
 
     def plan_prompts(self, image_path: str) -> Dict[str, List[str]]:
-        """Ask VLM for image-specific SAM3 prompt additions."""
+        """Ask VLM for image-specific segmentation prompt additions."""
         if not self._enabled_for("prompt_planning"):
             return {}
         prompt = (
-            "你是图表元素识别提示词规划器。请观察图片，为 SAM3 分割补充英文 prompt。"
+            "你是图表元素识别提示词规划器。请观察图片，为 segmentation 分割补充英文 prompt。"
             + self._json_only_instruction(
                 '{"image":["icon"],"shape":["rounded rectangle"],"arrow":["dashed connector line"],"background":["outer panel"]}'
             )
@@ -153,7 +153,7 @@ class VLMTextPromptMixin:
         return planned
 
     def apply_prompt_plan(self, extractor: Any, image_path: str, output_dir: str = "") -> Dict[str, List[str]]:
-        from .sam3_info_extractor import PromptGroup
+        from .segmentation_info_extractor import PromptGroup
 
         planned = self.plan_prompts(image_path)
         if not planned:

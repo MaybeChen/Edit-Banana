@@ -6,7 +6,7 @@
     - 从图片中提取填充色和描边色
     - 检测边框宽度
     - 用XML描述这些图形
-    - 支持CV补充检测（检测SAM3遗漏的矩形/容器）
+    - 支持CV补充检测（检测segmentation遗漏的矩形/容器）
     - 输出XML片段
 
 负责人：[已实现]
@@ -17,7 +17,7 @@
     
     processor = BasicShapeProcessor()
     context = ProcessingContext(image_path="test.png")
-    context.elements = [...]  # 从SAM3获取的元素
+    context.elements = [...]  # 从segmentation获取的元素
     
     result = processor.process(context)
     # 处理后的元素会包含 fill_color, stroke_color, xml_fragment 字段
@@ -456,12 +456,12 @@ def extract_style_specific(image: np.ndarray, bbox: list, shape_type: str) -> di
 def extract_color_with_mask(image: np.ndarray, bbox: list, mask: np.ndarray,
                             shape_type: str = "unknown") -> dict:
     """
-    使用SAM3提供的Mask进行精确取色
+    使用segmentation提供的Mask进行精确取色
     
     Args:
         image: BGR格式的OpenCV图像
         bbox: [x1, y1, x2, y2] 边界框
-        mask: SAM3提供的二值掩码 (full size or cropped)
+        mask: segmentation提供的二值掩码 (full size or cropped)
         shape_type: 形状类型
         
     Returns:
@@ -661,7 +661,7 @@ def unify_element_styles(elements: list) -> list:
     """
     统一相似大小和类型的基本图形的边框厚度。
     
-    注意：参考 sam3_extractor.py 的简化逻辑，默认边框宽度为1，
+    注意：参考 segmentation_extractor.py 的简化逻辑，默认边框宽度为1，
     这里主要用于确保同类元素风格一致。
     """
     if not elements:

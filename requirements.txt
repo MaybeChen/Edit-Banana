@@ -1,19 +1,10 @@
 # Pipeline & optional web backend
-# SAM3 currently imports pkg_resources; setuptools 81+ warns and 82+ removes it.
-setuptools<81
 einops
 pycocotools
 psutil
-# SAM3/PyTorch attention stack may import Triton. Use platform markers because
-# official Triton wheels are Linux-only; native Windows users can try triton-windows.
-triton; platform_system == "Linux"
-triton-windows; platform_system == "Windows"
 # PaddleOCR 3.x/PP-OCRv6 and ONNX Runtime work with modern protobuf.
 protobuf>=4.25.8
 pyyaml
-# Keep NumPy pinned below 2.x: SAM3 requires numpy<2 and PaddleOCR/PaddleX is
-# compatible with 1.26.x. Use --force-reinstall if an existing env already has
-# NumPy 2.x installed.
 numpy==1.26.4
 opencv-python==4.11.0.86
 opencv-python-headless==4.11.0.86
@@ -24,7 +15,6 @@ scikit-image>=0.24.0,<0.26.0
 requests
 fastapi
 uvicorn[standard]
-python-pptx>=1.0.2
 
 # Text OCR (local, default)
 pytesseract
@@ -40,5 +30,3 @@ pix2text
 # Use onnxruntime-gpu instead if your deployment needs GPU ONNX Runtime.
 onnxruntime
 modelscope
-
-# PyTorch and SAM3 are installed separately; see README and scripts/setup_sam3.sh.

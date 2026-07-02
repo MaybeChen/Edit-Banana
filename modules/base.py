@@ -188,7 +188,7 @@ class ModelWrapper:
     为了让"调用模型时应该就是一句话"，我们将模型封装成简单的接口。
     
     使用示例:
-        model = SAM3Model()
+        model = segmentationModel()
         result = model.predict(image, prompts)  # 一行调用
     """
     
