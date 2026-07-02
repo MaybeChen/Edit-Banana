@@ -7,14 +7,52 @@ _VLM_JSON_RULES = """
 """
 
 VLM_PAGE_REGIONS_PROMPT = f"""
-你是 PPT/网页/信息图的页面粗结构识别器。只识别大块区域，不识别区域内部的小元素。
+你是 PPT 页面布局分析器。
 
-任务：识别 background、header、footer、sidebar、section、card、panel、table、chart、diagram、group、image 区域。
-不要输出文字内容、箭头端点、详细样式或内部结构。
-{_VLM_JSON_RULES}
+请分析整张页面图片，只识别页面级结构和主要视觉区域。
+不要逐字识别文本，不要识别表格单元格，不要提取图表数据，不要识别小图标细节。
 
-JSON schema 示例：
-{{"regions":[{{"id":"r1","type":"card","semantic_type":"metric_card","bbox":{{"x":80,"y":120,"width":260,"height":140}},"confidence":0.9}}]}}
+坐标使用 normalized_0_1000：
+左上角为 (0,0)，右下角为 (1000,1000)。
+
+请识别以下区域类型：
+- background
+- header
+- footer
+- sidebar
+- main_content
+- container_group
+- card_group
+- image_region
+- icon_logo_region
+- table_region
+- chart_region
+- diagram_region
+- complex_visual_region
+
+要求：
+1. 每个区域必须包含唯一 id、type、bbox、confidence。
+2. bbox 尽量贴合实际区域，不要包含过多无关空白。
+3. 识别页面主布局，例如 single_column、two_column、three_column、dashboard、grid、timeline。
+4. 输出阅读顺序。
+5. 不要输出页面内的具体文字内容。
+6. 只输出合法 JSON，不要输出解释或 Markdown。
+
+输出格式：
+{{
+  "page_aspect_ratio_estimate": "16:9",
+  "layout_pattern": "two_column",
+  "page_structure": "header + main_content + footer",
+  "regions": [
+    {{
+      "id": "region_001",
+      "type": "header",
+      "bbox": {{"x": 0, "y": 0, "width": 1000, "height": 140}},
+      "confidence": 0.95
+    }}
+  ],
+  "reading_order": ["region_001"]
+}}
 """
 
 VLM_REGION_ELEMENTS_PROMPT = f"""

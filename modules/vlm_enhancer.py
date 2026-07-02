@@ -159,7 +159,7 @@ class VLMEnhancer:
             return {}
         if stage in {"element_refine", "region_refine", "segmentation_refine", "element_attributes", "export_repair", "vlm_region_elements"}:
             return {"elements": parsed}
-        if stage == "vlm_page_regions":
+        if stage in {"vlm_page_regions", "vlm_page_layout"}:
             return {"regions": parsed}
         if stage in {"layout_refine", "vlm_connectors"}:
             return {"edges": parsed}
@@ -590,14 +590,20 @@ class VLMEnhancer:
 
     def recognize_page_regions(self, context: ProcessingContext) -> Dict[str, Any]:
         """Stage 1: recognize only coarse page regions."""
+        return self.recognize_page_layout(context)
+
+    def recognize_page_layout(self, context: ProcessingContext) -> Dict[str, Any]:
+        """Step 1: recognize full-page layout skeleton and major regions only."""
+        if not self.enabled or self.client is None:
+            return {"recognized": False, "regions": [], "error": "multimodal VLM is disabled"}
         threshold = float(self.thresholds.get("vlm_region_confidence", self.thresholds.get("vlm_structure_confidence", 0.60)))
         try:
             data = self._parse_json_response_with_debug(
                 self.client.analyze_image(self._vlm_image_for_context(context), VLM_PAGE_REGIONS_PROMPT),
-                "vlm_page_regions",
+                "vlm_page_layout",
             )
         except Exception as exc:
-            print(f"[VLMEnhancer] VLM page region recognition skipped: {exc}", flush=True)
+            print(f"[VLMEnhancer] VLM page layout recognition skipped: {exc}", flush=True)
             return {"recognized": False, "regions": [], "error": str(exc)}
         raw_regions = data.get("regions", []) if isinstance(data.get("regions"), list) else []
         regions = []
@@ -610,9 +616,19 @@ class VLMEnhancer:
             region = dict(item)
             region.setdefault("id", f"r{idx}")
             regions.append(region)
-        result = {"recognized": bool(regions), "regions": regions, "raw_count": len(raw_regions)}
-        self._print_json("vlm_page_regions recognized", {"items": regions})
-        self._write_artifact(context, "vlm_page_regions.json", result)
+        result = {
+            "recognized": bool(data),
+            "page_aspect_ratio_estimate": data.get("page_aspect_ratio_estimate"),
+            "layout_pattern": data.get("layout_pattern"),
+            "page_structure": data.get("page_structure"),
+            "regions": regions,
+            "reading_order": data.get("reading_order", []),
+            "raw_count": len(raw_regions),
+            "dropped_count": max(0, len(raw_regions) - len(regions)),
+            "raw": data,
+        }
+        self._print_json("vlm_page_layout recognized", {"items": regions, "layout_pattern": result.get("layout_pattern")})
+        self._write_artifact(context, "vlm_page_layout.json", result)
         return result
 
     def recognize_region_elements(self, context: ProcessingContext, regions: List[Dict[str, Any]]) -> Dict[str, Any]:

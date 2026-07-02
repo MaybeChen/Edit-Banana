@@ -415,60 +415,19 @@ class Pipeline:
             return None
 
     def _process_image_vlm_only(self, context: ProcessingContext, img_output_dir: str, img_stem: str) -> Optional[str]:
-        """Run the independent VLM-only pipeline.
-
-        This path skips SAM3, but can optionally use OCR text anchors so VLM is
-        responsible for structure/semantics while OCR keeps text content stable.
-        """
-        print("\n[1] VLM-only OCR anchors...")
-        self._initialize_canvas_from_image(context)
-        ocr_anchor_blocks = self._extract_vlm_only_ocr_anchors(context, img_output_dir)
-        if ocr_anchor_blocks:
-            context.intermediate_results['ocr_text_blocks'] = ocr_anchor_blocks
-            print(f"   OCR anchors: {len(ocr_anchor_blocks)}")
-        else:
-            print("   OCR anchors: disabled or unavailable")
-
-        print("\n[2] VLM-only staged structure recognition...")
-        structure_result = self.vlm_enhancer.recognize_structure_staged(context)
-        structure_path = os.path.join(img_output_dir, "vlm_structure_result.json")
-        self._save_json(structure_path, structure_result)
-        context.intermediate_results['vlm_structure_result_json'] = structure_path
-        if not structure_result.get("recognized"):
-            raise Exception(f"VLM-only recognition failed: {structure_result.get('error', 'no structured result')}")
-
-        text_blocks = ocr_anchor_blocks or self._extract_vlm_text_blocks(context)
-        context.intermediate_results['vlm_text_blocks'] = text_blocks
-        context.intermediate_results['ocr_text_blocks'] = text_blocks
-        text_path = os.path.join(img_output_dir, "vlm_text_result.json")
-        self._save_json(
-            text_path,
-            {"text_blocks": text_blocks, "source": "ocr_anchors" if ocr_anchor_blocks else "vlm_structure_text_elements"},
-        )
-        context.intermediate_results['vlm_text_result_json'] = text_path
-        print(f"   VLM text blocks: {len(text_blocks)}")
-
-        crop_result = self._crop_vlm_only_image_elements(context, img_output_dir)
-        print(f"   VLM image crops: {crop_result.get('cropped', 0)} cropped")
-
-        overlay_path = self._save_vlm_structure_overlay(context, img_output_dir)
-        context.intermediate_results['vlm_structure_overlay'] = overlay_path
-        print(f"   VLM structure overlay: {overlay_path}")
-        if structure_result.get("raw_count", 0) and not context.elements:
-            print("   Warning: VLM returned raw items but none passed schema/bbox validation")
-        print(f"   VLM-only elements: {len(context.elements)}")
-
-        print("\n[3] VLM element attribute enrichment...")
-        attr_result = self.vlm_enhancer.enrich_element_attributes(context)
-        attr_path = os.path.join(img_output_dir, "vlm_element_attributes.json")
-        self._save_json(attr_path, {"elements": [e.to_dict() for e in context.elements], "changes": attr_result.get("changes", [])})
-        context.intermediate_results['vlm_element_attributes_json'] = attr_path
-        print(f"   VLM element attributes: {attr_result.get('updated', 0)} updated")
-
-        print("\n[4] Direct PPTX generation + VLM quality loop...")
-        pptx_path = self._run_pptx_quality_loop(context, text_blocks, img_output_dir, img_stem)
-        print(f"\n{'='*60}\nDone.\n{'='*60}")
-        return pptx_path
+        """Run VLM-only step 1 and stop for incremental debugging."""
+        print("\n[1] Full-page Layout VLM...")
+        layout_result = self.vlm_enhancer.recognize_page_layout(context)
+        layout_path = os.path.join(img_output_dir, "vlm_page_layout_result.json")
+        self._save_json(layout_path, layout_result)
+        context.intermediate_results['vlm_page_layout_result_json'] = layout_path
+        if not layout_result.get("recognized"):
+            raise Exception(f"VLM layout recognition failed: {layout_result.get('error', 'no structured result')}")
+        print(f"   Layout pattern: {layout_result.get('layout_pattern') or 'unknown'}")
+        print(f"   Regions: {len(layout_result.get('regions') or [])}")
+        print(f"   Result: {layout_path}")
+        print(f"\n{'='*60}\nDone after step 1 (Layout VLM).\n{'='*60}")
+        return layout_path
 
     def _vlm_only_use_ocr_anchors(self) -> bool:
         recognition_cfg = self.config.get("recognition") or {}
