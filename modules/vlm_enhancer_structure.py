@@ -302,7 +302,7 @@ class VLMStructureMixin:
         """Normalize common bbox/geometry formats returned by VLMs."""
         bbox = item.get("bbox") or item.get("bounding_box") or item.get("box")
         if isinstance(bbox, list) and len(bbox) == 4:
-            return bbox
+            return VLMStructureMixin._bbox_from_list(bbox)
         if isinstance(bbox, dict):
             return VLMStructureMixin._bbox_from_dict(bbox)
         geometry = item.get("geometry") or item.get("position") or item.get("rect")
@@ -331,6 +331,18 @@ class VLMStructureMixin:
             int(round(x2 * width / 1000)),
             int(round(y2 * height / 1000)),
         ]
+
+
+    @staticmethod
+    def _bbox_from_list(values: List[Any]) -> Optional[List[Any]]:
+        """Accept both [x1, y1, x2, y2] and occasional [x, y, width, height]."""
+        try:
+            x1, y1, third, fourth = [float(value) for value in values]
+        except (TypeError, ValueError):
+            return None
+        if third <= x1 or fourth <= y1:
+            return [x1, y1, x1 + max(0, third), y1 + max(0, fourth)]
+        return [x1, y1, third, fourth]
 
     @staticmethod
     def _bbox_from_dict(data: Dict[str, Any]) -> Optional[List[Any]]:
