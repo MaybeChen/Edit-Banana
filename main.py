@@ -20,6 +20,7 @@ import argparse
 import warnings
 import yaml
 import json
+import uuid
 from pathlib import Path
 from typing import Optional, List
 
@@ -272,7 +273,8 @@ class Pipeline:
                       output_dir: str = None,
                       with_refinement: bool = False,
                       with_text: bool = True,
-                      groups: List[PromptGroup] = None) -> Optional[str]:
+                      groups: List[PromptGroup] = None,
+                      task_id: str = None) -> Optional[str]:
         """Run the VLM-first pipeline on one image. Returns final PPTX path or None."""
         print(f"\n{'='*60}")
         print(f"Processing: {image_path}")
@@ -282,12 +284,14 @@ class Pipeline:
             output_dir = self.config.get('paths', {}).get('output_dir', './output')
 
         img_stem = Path(image_path).stem
-        img_output_dir = os.path.join(output_dir, img_stem)
+        task_id = task_id or uuid.uuid4().hex
+        img_output_dir = os.path.join(output_dir, task_id)
         os.makedirs(img_output_dir, exist_ok=True)
 
         print("\n[0] Preprocess...")
         context = ProcessingContext(image_path=image_path, output_dir=img_output_dir)
         context.intermediate_results['original_image_path'] = image_path
+        context.intermediate_results['task_id'] = task_id
         context.intermediate_results['was_upscaled'] = False
         context.intermediate_results['upscale_factor'] = 1.0
 
