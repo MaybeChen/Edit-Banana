@@ -164,7 +164,7 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
         regions = []
         dropped_regions = []
         min_area = float(self.thresholds.get("vlm_region_min_area", 12000) or 12000)
-        max_regions = int(self.config.get("vlm_page_region_max_items", 10) or 10)
+        max_regions = int(self.config.get("vlm_page_region_max_items", 15) or 15)
         for idx, item in enumerate(raw_regions):
             if not isinstance(item, dict):
                 dropped_regions.append({"index": idx, "reason": "not_object"})
