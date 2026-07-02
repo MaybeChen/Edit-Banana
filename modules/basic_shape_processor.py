@@ -6,7 +6,7 @@
     - 从图片中提取填充色和描边色
     - 检测边框宽度
     - 用XML描述这些图形
-    - 支持CV补充检测（检测SAM3遗漏的矩形/容器）
+    - 支持CV补充检测（检测segmentation遗漏的矩形/容器）
     - 输出XML片段
 
 负责人：[已实现]
@@ -17,7 +17,7 @@
     
     processor = BasicShapeProcessor()
     context = ProcessingContext(image_path="test.png")
-    context.elements = [...]  # 从SAM3获取的元素
+    context.elements = [...]  # 从segmentation获取的元素
     
     result = processor.process(context)
     # 处理后的元素会包含 fill_color, stroke_color, xml_fragment 字段
@@ -103,7 +103,7 @@ class BasicShapeProcessor(BaseProcessor):
         """
         Args:
             config: 处理配置
-            enable_cv_detection: 是否启用CV补充检测（检测SAM3遗漏的矩形）
+            enable_cv_detection: 是否启用CV补充检测（检测segmentation遗漏的矩形）
         """
         super().__init__(config)
         self.enable_cv_detection = enable_cv_detection
@@ -153,7 +153,7 @@ class BasicShapeProcessor(BaseProcessor):
         if self.enable_cv_detection:
             cv_added_count = self._run_cv_detection(context, cv2_image)
         
-        self._log(f"处理完成: {processed_count}个SAM3图形, {cv_added_count}个CV补充")
+        self._log(f"处理完成: {processed_count}个segmentation图形, {cv_added_count}个CV补充")
         
         return ProcessingResult(
             success=True,
@@ -178,7 +178,7 @@ class BasicShapeProcessor(BaseProcessor):
         """
         处理单个元素：提取颜色并生成XML
         
-        优先使用SAM3提供的Mask进行精确取色
+        优先使用segmentation提供的Mask进行精确取色
         
         Args:
             elem: 元素信息
@@ -189,7 +189,7 @@ class BasicShapeProcessor(BaseProcessor):
         
         # 提取样式 - 优先使用Mask
         if elem.mask is not None and hasattr(elem.mask, 'shape') and elem.mask.size > 0:
-            # 使用SAM3提供的Mask进行精确取色
+            # 使用segmentation提供的Mask进行精确取色
             style_data = extract_color_with_mask(
             cv2_image,
                 elem.bbox.to_list(), 
@@ -248,7 +248,7 @@ class BasicShapeProcessor(BaseProcessor):
         stroke_width = style_data["stroke_width"]
         
         # Use transparent fills for vectorized diagram shapes so nested raster/OCR
-        # details are not covered when SAM3 detects an inner module as a rectangle.
+        # details are not covered when segmentation detects an inner module as a rectangle.
         if elem_type in {"rectangle", "rounded rectangle", "rounded_rectangle", "container", "cylinder"}:
             fill_color = "none"
         style = f"{base_style}fillColor={fill_color};strokeColor={stroke_color};strokeWidth={stroke_width};"
@@ -262,20 +262,20 @@ class BasicShapeProcessor(BaseProcessor):
     
     def _run_cv_detection(self, context: ProcessingContext, cv2_image: np.ndarray) -> int:
         """运行CV补充检测"""
-        # 构建SAM3元素字典格式
-        sam3_elements = {}
+        # 构建segmentation元素字典格式
+        segmentation_elements = {}
         for elem in context.elements:
             elem_type = elem.element_type.lower()
-            if elem_type not in sam3_elements:
-                sam3_elements[elem_type] = []
-            sam3_elements[elem_type].append({
+            if elem_type not in segmentation_elements:
+                segmentation_elements[elem_type] = []
+            segmentation_elements[elem_type].append({
                 "bbox": elem.bbox.to_list(),
                 "score": elem.score
             })
         
         # 运行检测
         h, w = cv2_image.shape[:2]
-        cv_results = detect_rectangles_robust(cv2_image, sam3_elements, {
+        cv_results = detect_rectangles_robust(cv2_image, segmentation_elements, {
             # Diagram cards are small relative to the full canvas (~2-4% in common exports).
             "min_area_ratio": 0.015,
             "max_area_ratio": 0.95
@@ -305,7 +305,7 @@ class BasicShapeProcessor(BaseProcessor):
     def _add_container_shapes_from_card_crops(
         self, context: ProcessingContext, cv2_image: np.ndarray, start_id: int
     ) -> int:
-        """Use large SAM3 icon/card crops as container border hints when CV misses them."""
+        """Use large segmentation icon/card crops as container border hints when CV misses them."""
         h, w = cv2_image.shape[:2]
         canvas_area = max(1, h * w)
         existing_shape_boxes = [
@@ -337,7 +337,7 @@ class BasicShapeProcessor(BaseProcessor):
             item = {
                 "bbox": bbox,
                 "score": max(elem.score, 0.72),
-                "method": "sam3_card_bbox",
+                "method": "segmentation_card_bbox",
                 "is_rounded": True,
                 "fill_color": "none",
                 "stroke_color": "#000000",
@@ -407,18 +407,18 @@ class BasicShapeProcessor(BaseProcessor):
 
 
 # ======================== 独立处理函数 ========================
-def process_basic_shapes(image: np.ndarray, sam3_elements: dict) -> str:
+def process_basic_shapes(image: np.ndarray, segmentation_elements: dict) -> str:
     """
-    处理所有基本图形（SAM3结果 + CV补充检测），生成DrawIO XML。
+    处理所有基本图形（segmentation结果 + CV补充检测），生成DrawIO XML。
     
     :param image: 原始图像 (BGR)
-    :param sam3_elements: SAM3提取的元素字典
+    :param segmentation_elements: segmentation提取的元素字典
     :return: 格式化的XML字符串
     """
     h, w = image.shape[:2]
     
     # 运行CV补充检测
-    cv_results = detect_rectangles_robust(image, sam3_elements, {
+    cv_results = detect_rectangles_robust(image, segmentation_elements, {
         "min_area_ratio": 0.07,
         "max_area_ratio": 0.95
     })
@@ -427,12 +427,12 @@ def process_basic_shapes(image: np.ndarray, sam3_elements: dict) -> str:
     containers_list = []
     shapes_list = []
     
-    # 来自 SAM3 的 container
-    if "container" in sam3_elements:
-        for item in sam3_elements["container"]:
+    # 来自 segmentation 的 container
+    if "container" in segmentation_elements:
+        for item in segmentation_elements["container"]:
             item_copy = item.copy()
             item_copy["_type"] = "container"
-            item_copy["_source"] = "sam3"
+            item_copy["_source"] = "segmentation"
             containers_list.append(item_copy)
             
     # 来自 CV 检测的 containers
@@ -442,13 +442,13 @@ def process_basic_shapes(image: np.ndarray, sam3_elements: dict) -> str:
         item_copy["_source"] = "cv"
         containers_list.append(item_copy)
         
-    # 来自 SAM3 的其他形状
-    for key, items in sam3_elements.items():
+    # 来自 segmentation 的其他形状
+    for key, items in segmentation_elements.items():
         if key in VECTOR_TYPES and key != "container":
             for item in items:
                 item_copy = item.copy()
                 item_copy["_type"] = key
-                item_copy["_source"] = "sam3"
+                item_copy["_source"] = "segmentation"
                 shapes_list.append(item_copy)
                 
     # 来自 CV 检测的 rectangles
@@ -538,7 +538,7 @@ def process_basic_shapes(image: np.ndarray, sam3_elements: dict) -> str:
                     base_style += f"direction={geo_params['direction']};"
             
             # Use transparent fills for vectorized diagram shapes so nested raster/OCR
-            # details are not covered when SAM3 detects an inner module as a rectangle.
+            # details are not covered when segmentation detects an inner module as a rectangle.
             if elem_type in {"rectangle", "rounded rectangle", "rounded_rectangle", "container", "cylinder"}:
                 fill_color = "none"
             style = f"{base_style}fillColor={fill_color};strokeColor={stroke_color};strokeWidth={stroke_width};"

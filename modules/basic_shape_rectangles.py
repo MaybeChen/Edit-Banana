@@ -6,7 +6,7 @@
     - 从图片中提取填充色和描边色
     - 检测边框宽度
     - 用XML描述这些图形
-    - 支持CV补充检测（检测SAM3遗漏的矩形/容器）
+    - 支持CV补充检测（检测segmentation遗漏的矩形/容器）
     - 输出XML片段
 
 负责人：[已实现]
@@ -17,7 +17,7 @@
     
     processor = BasicShapeProcessor()
     context = ProcessingContext(image_path="test.png")
-    context.elements = [...]  # 从SAM3获取的元素
+    context.elements = [...]  # 从segmentation获取的元素
     
     result = processor.process(context)
     # 处理后的元素会包含 fill_color, stroke_color, xml_fragment 字段
@@ -191,7 +191,7 @@ def _validate_cv_rectangle(cv2_image: np.ndarray, bbox: list, min_std: float = 8
 # ======================== CV矩形检测 ========================
 def detect_rectangles_robust(cv2_image: np.ndarray, existing_elements: dict, config: dict = None) -> dict:
     """
-    精准矩形检测（补充SAM3遗漏的矩形）
+    精准矩形检测（补充segmentation遗漏的矩形）
     
     采用保守策略：
     - 默认只启用可靠的检测方法（contour, nested_contour）
@@ -199,7 +199,7 @@ def detect_rectangles_robust(cv2_image: np.ndarray, existing_elements: dict, con
     - 对检测结果进行内容验证
     
     :param cv2_image: BGR格式的OpenCV图像
-    :param existing_elements: SAM3已识别的元素字典
+    :param existing_elements: segmentation已识别的元素字典
     :param config: 配置参数字典
     :return: {"rectangles": [...], "containers": [...]}
     """
@@ -238,11 +238,11 @@ def detect_rectangles_robust(cv2_image: np.ndarray, existing_elements: dict, con
     max_area = total_area * cfg["max_area_ratio"]
     min_area = max(cfg["min_area"], int(total_area * cfg.get("min_area_ratio", 0)))
     
-    # 收集SAM3已检测的bbox
-    sam3_bboxes = []
+    # 收集segmentation已检测的bbox
+    segmentation_bboxes = []
     for elem_type, items in existing_elements.items():
         for item in items:
-            sam3_bboxes.append({"bbox": item["bbox"], "type": elem_type})
+            segmentation_bboxes.append({"bbox": item["bbox"], "type": elem_type})
     
     all_candidates = []
     gray = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2GRAY)
@@ -610,14 +610,14 @@ def detect_rectangles_robust(cv2_image: np.ndarray, existing_elements: dict, con
             if not _validate_cv_rectangle(cv2_image, bbox, min_std=min_content_std):
                 continue
         
-        # 与SAM3结果对比
-        is_dup_sam3 = False
-        for sam3_item in sam3_bboxes:
-            iou = calculate_iou(bbox, sam3_item["bbox"])
+        # 与segmentation结果对比
+        is_dup_segmentation = False
+        for segmentation_item in segmentation_bboxes:
+            iou = calculate_iou(bbox, segmentation_item["bbox"])
             if iou > cfg["iou_threshold"]:
-                is_dup_sam3 = True
+                is_dup_segmentation = True
                 break
-        if is_dup_sam3:
+        if is_dup_segmentation:
             continue
         
         # NMS
@@ -633,7 +633,7 @@ def detect_rectangles_robust(cv2_image: np.ndarray, existing_elements: dict, con
         filtered_candidates.append(cand)
     
     # 自动分层（判断谁是容器）
-    all_bboxes_for_contain = [item["bbox"] for item in sam3_bboxes] + [c["bbox"] for c in filtered_candidates]
+    all_bboxes_for_contain = [item["bbox"] for item in segmentation_bboxes] + [c["bbox"] for c in filtered_candidates]
     
     for cand in filtered_candidates:
         x1, y1, x2, y2 = cand["bbox"]
