@@ -199,7 +199,37 @@ def normalize_regions(raw_regions: Any, original_size: Dict[str, int], vlm_size:
             "confidence": confidence,
         }
         regions.append(region)
-    return regions
+    return drop_near_duplicate_regions(regions)
+
+
+def drop_near_duplicate_regions(regions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove regions with near-identical bboxes because they add overlay noise only."""
+    kept: List[Dict[str, Any]] = []
+    for region in regions:
+        if any(region_iou(region, candidate) >= 0.96 for candidate in kept):
+            continue
+        kept.append(region)
+    return kept
+
+
+def region_iou(first: Dict[str, Any], second: Dict[str, Any]) -> float:
+    a = first.get("pixel_bbox") or first.get("bbox") or {}
+    b = second.get("pixel_bbox") or second.get("bbox") or {}
+    ax1 = float(a.get("x", 0) or 0)
+    ay1 = float(a.get("y", 0) or 0)
+    ax2 = ax1 + float(a.get("width", 0) or 0)
+    ay2 = ay1 + float(a.get("height", 0) or 0)
+    bx1 = float(b.get("x", 0) or 0)
+    by1 = float(b.get("y", 0) or 0)
+    bx2 = bx1 + float(b.get("width", 0) or 0)
+    by2 = by1 + float(b.get("height", 0) or 0)
+    inter_w = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    inter_h = max(0.0, min(ay2, by2) - max(ay1, by1))
+    intersection = inter_w * inter_h
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - intersection
+    return intersection / union if union > 0 else 0.0
 
 
 def normalize_bbox(raw_bbox: Any, vlm_size: Dict[str, int], original_size: Dict[str, int]) -> Optional[Dict[str, int]]:

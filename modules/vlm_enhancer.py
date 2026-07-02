@@ -197,6 +197,8 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
             region["coordinate_system"] = "pixel_original"
             region["area"] = area
             regions.append(region)
+        regions, duplicate_drops = self._drop_near_duplicate_page_regions(regions)
+        dropped_regions.extend(duplicate_drops)
         if len(regions) > max_regions:
             regions.sort(key=lambda region: region.get("area", 0), reverse=True)
             dropped_regions.extend(
@@ -227,6 +229,47 @@ class VLMEnhancer(VLMCoreMixin, VLMTextPromptMixin, VLMStructureMixin, VLMRefine
         context.intermediate_results["vlm_page_regions_overlay"] = overlay_path
         self._write_artifact(context, "vlm_page_regions.json", result)
         return result
+
+    @classmethod
+    def _drop_near_duplicate_page_regions(cls, regions: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Drop regions whose bbox adds no new crop area over an earlier region."""
+        kept: List[Dict[str, Any]] = []
+        dropped: List[Dict[str, Any]] = []
+        for region in regions:
+            duplicate_of = next(
+                (candidate for candidate in kept if cls._page_region_bbox_iou(region, candidate) >= 0.96),
+                None,
+            )
+            if duplicate_of is not None:
+                dropped.append({
+                    "id": region.get("id"),
+                    "type": region.get("type"),
+                    "reason": "near_duplicate_bbox",
+                    "duplicate_of": duplicate_of.get("id"),
+                })
+                continue
+            kept.append(region)
+        return kept, dropped
+
+    @staticmethod
+    def _page_region_bbox_iou(first: Dict[str, Any], second: Dict[str, Any]) -> float:
+        a = first.get("pixel_bbox") or first.get("bbox") or {}
+        b = second.get("pixel_bbox") or second.get("bbox") or {}
+        ax1 = float(a.get("x", 0) or 0)
+        ay1 = float(a.get("y", 0) or 0)
+        ax2 = ax1 + float(a.get("width", 0) or 0)
+        ay2 = ay1 + float(a.get("height", 0) or 0)
+        bx1 = float(b.get("x", 0) or 0)
+        by1 = float(b.get("y", 0) or 0)
+        bx2 = bx1 + float(b.get("width", 0) or 0)
+        by2 = by1 + float(b.get("height", 0) or 0)
+        inter_w = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+        inter_h = max(0.0, min(ay2, by2) - max(ay1, by1))
+        intersection = inter_w * inter_h
+        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+        union = area_a + area_b - intersection
+        return intersection / union if union > 0 else 0.0
 
     def _prepare_vlm_layout_image(self, context: ProcessingContext) -> str:
         """Save original-size metadata and create the <=2048 long-edge image for VLM."""

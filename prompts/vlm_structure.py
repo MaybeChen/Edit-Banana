@@ -47,6 +47,8 @@ VLM_PAGE_REGIONS_PROMPT_TEMPLATE = """
 - 中央流程图、关系图、画布示意：外层可属于 main_content，内部核心图整体必须输出 diagram_region，不要拆内部节点。
 - 底部“核心诉求/总结/能力要求”一类横向卡片组：外层输出 footer 或 container_group，内部卡片整体再输出一个 card_group。
 - bbox 可以覆盖该区域内的标题和所有子卡片，但不要跨到其他大区域；父区域可包含子区域。
+- 父子区域不能使用完全相同或几乎相同的 bbox；如果子区域边界无法比父区域更精确，就不要输出这个子区域。
+- 不要同时输出语义重复且 bbox 相同的区域，例如 sidebar 和 card_group_sidebar 完全同框、main_content 和 diagram_region 完全同框。
 - 如果页面中存在明显分区标题（如“关键问题”“核心诉求”），该标题和下方卡片应合成一个 container_group，并可再输出内部 card_group。
 
 要求：
@@ -57,7 +59,8 @@ VLM_PAGE_REGIONS_PROMPT_TEMPLATE = """
 5. 输出 reading_order，顺序必须按真实阅读顺序排列。
 6. 不要输出页面内的具体文字内容。
 7. 输出前自检：如果 bbox 的 y/height 看起来像 120/400/520/920 等模板分段，而不是贴合图片边界，必须重新定位。
-8. 只输出合法 JSON，不要输出解释或 Markdown。
+8. 输出前自检：如果两个区域 bbox 几乎完全重合，只保留更有用的一个，不要重复输出。
+9. 只输出合法 JSON，不要输出解释或 Markdown。
 
 输出 JSON 字段结构：
 - page_aspect_ratio_estimate: 字符串
