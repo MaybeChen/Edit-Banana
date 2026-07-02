@@ -20,6 +20,7 @@ import argparse
 import warnings
 import yaml
 import json
+import base64
 from pathlib import Path
 from typing import Any, Dict, Optional, List
 
@@ -95,6 +96,7 @@ def load_config() -> dict:
             },
             'recognition': {
                 'mode': 'sam3_first',
+                'use_ocr_anchors': True,
             },
             'multimodal': {
                 'mode': 'api',
@@ -105,6 +107,9 @@ def load_config() -> dict:
                 'x_hw_appkey': '',
                 'max_tokens': 4000,
                 'timeout': 60,
+                'request_text_log_chars': 1200,
+                'vlm_only_region_max_items': 20,
+                'vlm_only_ocr_anchor_max_blocks': 30,
                 'enabled': False,
                 'use_for': {
                     'prompt_planning': True,
@@ -120,6 +125,8 @@ def load_config() -> dict:
                     'element_refine_confidence': 0.75,
                     'region_refine_confidence': 0.70,
                     'layout_refine_confidence': 0.70,
+                    'vlm_region_confidence': 0.60,
+                    'vlm_connector_confidence': 0.70,
                     'text_style_confidence': 0.65,
                     'segmentation_refine_confidence': 0.65,
                     'element_attribute_confidence': 0.65,
@@ -402,26 +409,39 @@ class Pipeline:
     def _process_image_vlm_only(self, context: ProcessingContext, img_output_dir: str, img_stem: str) -> Optional[str]:
         """Run the independent VLM-only pipeline.
 
-        This path intentionally does not call PaddleOCR/SAM3/CV processors. Text is
-        reconstructed from the ``text`` elements returned by the VLM structure
-        prompt, so changes here do not alter the original SAM3-first workflow.
+        This path skips SAM3, but can optionally use OCR text anchors so VLM is
+        responsible for structure/semantics while OCR keeps text content stable.
         """
-        print("\n[1] VLM-only structure recognition...")
+        print("\n[1] VLM-only OCR anchors...")
         self._initialize_canvas_from_image(context)
-        structure_result = self.vlm_enhancer.recognize_structure(context)
+        ocr_anchor_blocks = self._extract_vlm_only_ocr_anchors(context, img_output_dir)
+        if ocr_anchor_blocks:
+            context.intermediate_results['ocr_text_blocks'] = ocr_anchor_blocks
+            print(f"   OCR anchors: {len(ocr_anchor_blocks)}")
+        else:
+            print("   OCR anchors: disabled or unavailable")
+
+        print("\n[2] VLM-only staged structure recognition...")
+        structure_result = self.vlm_enhancer.recognize_structure_staged(context)
         structure_path = os.path.join(img_output_dir, "vlm_structure_result.json")
         self._save_json(structure_path, structure_result)
         context.intermediate_results['vlm_structure_result_json'] = structure_path
         if not structure_result.get("recognized"):
             raise Exception(f"VLM-only recognition failed: {structure_result.get('error', 'no structured result')}")
 
-        text_blocks = self._extract_vlm_text_blocks(context)
+        text_blocks = ocr_anchor_blocks or self._extract_vlm_text_blocks(context)
         context.intermediate_results['vlm_text_blocks'] = text_blocks
         context.intermediate_results['ocr_text_blocks'] = text_blocks
         text_path = os.path.join(img_output_dir, "vlm_text_result.json")
-        self._save_json(text_path, {"text_blocks": text_blocks, "source": "vlm_structure_text_elements"})
+        self._save_json(
+            text_path,
+            {"text_blocks": text_blocks, "source": "ocr_anchors" if ocr_anchor_blocks else "vlm_structure_text_elements"},
+        )
         context.intermediate_results['vlm_text_result_json'] = text_path
         print(f"   VLM text blocks: {len(text_blocks)}")
+
+        crop_result = self._crop_vlm_only_image_elements(context, img_output_dir)
+        print(f"   VLM image crops: {crop_result.get('cropped', 0)} cropped")
 
         overlay_path = self._save_vlm_structure_overlay(context, img_output_dir)
         context.intermediate_results['vlm_structure_overlay'] = overlay_path
@@ -430,17 +450,83 @@ class Pipeline:
             print("   Warning: VLM returned raw items but none passed schema/bbox validation")
         print(f"   VLM-only elements: {len(context.elements)}")
 
-        print("\n[2] VLM element attribute enrichment...")
+        print("\n[3] VLM element attribute enrichment...")
         attr_result = self.vlm_enhancer.enrich_element_attributes(context)
         attr_path = os.path.join(img_output_dir, "vlm_element_attributes.json")
         self._save_json(attr_path, {"elements": [e.to_dict() for e in context.elements], "changes": attr_result.get("changes", [])})
         context.intermediate_results['vlm_element_attributes_json'] = attr_path
         print(f"   VLM element attributes: {attr_result.get('updated', 0)} updated")
 
-        print("\n[3] Direct PPTX generation + VLM quality loop...")
+        print("\n[4] Direct PPTX generation + VLM quality loop...")
         pptx_path = self._run_pptx_quality_loop(context, text_blocks, img_output_dir, img_stem)
         print(f"\n{'='*60}\nDone.\n{'='*60}")
         return pptx_path
+
+    def _vlm_only_use_ocr_anchors(self) -> bool:
+        recognition_cfg = self.config.get("recognition") or {}
+        multimodal_cfg = self.config.get("multimodal") or {}
+        return bool(
+            recognition_cfg.get(
+                "use_ocr_anchors",
+                multimodal_cfg.get("vlm_only_use_ocr_anchors", True),
+            )
+        )
+
+    def _extract_vlm_only_ocr_anchors(self, context: ProcessingContext, output_dir: str) -> List[Dict[str, Any]]:
+        """Run OCR as optional text anchors for VLM-only structure recognition."""
+        if not self._vlm_only_use_ocr_anchors() or self.text_restorer is None:
+            return []
+        try:
+            text_blocks = self.text_restorer.process_image(context.image_path)
+            for idx, block in enumerate(text_blocks):
+                block.setdefault("id", idx)
+            if hasattr(self.text_restorer, "save_ocr_artifacts"):
+                context.intermediate_results['ocr_result_json'] = self.text_restorer.save_ocr_artifacts(output_dir, context.image_path)
+            else:
+                self._save_json(os.path.join(output_dir, "ocr_result.json"), {"text_blocks": text_blocks})
+            if hasattr(self.text_restorer, "save_ocr_overlay"):
+                context.intermediate_results['ocr_overlay'] = self.text_restorer.save_ocr_overlay(output_dir, context.image_path)
+            return text_blocks
+        except Exception as exc:
+            print(f"   OCR anchors failed: {exc}")
+            return []
+
+    @staticmethod
+    def _crop_vlm_only_image_elements(context: ProcessingContext, output_dir: str) -> Dict[str, Any]:
+        """Crop image/icon/logo/chart boxes in VLM-only mode for image fallback."""
+        from PIL import Image
+        image_types = {"icon", "picture", "logo", "chart", "function_graph"}
+        crop_dir = os.path.join(output_dir, "vlm_crops")
+        cropped = []
+        try:
+            with Image.open(context.image_path) as img:
+                rgba = img.convert("RGBA")
+                os.makedirs(crop_dir, exist_ok=True)
+                for elem in context.elements:
+                    if str(elem.element_type or "").lower() not in image_types or elem.base64:
+                        continue
+                    bbox = elem.bbox
+                    if bbox.width <= 1 or bbox.height <= 1:
+                        continue
+                    crop_box = (
+                        max(0, int(bbox.x1)),
+                        max(0, int(bbox.y1)),
+                        min(rgba.width, int(bbox.x2)),
+                        min(rgba.height, int(bbox.y2)),
+                    )
+                    if crop_box[2] <= crop_box[0] or crop_box[3] <= crop_box[1]:
+                        continue
+                    crop_path = os.path.join(crop_dir, f"element_{elem.id}.png")
+                    rgba.crop(crop_box).save(crop_path)
+                    with open(crop_path, "rb") as f:
+                        elem.base64 = base64.b64encode(f.read()).decode("ascii")
+                    elem.reconstruction_strategy = elem.reconstruction_strategy or "cropped_image"
+                    elem.processing_notes.append("vlm_only_bbox_crop")
+                    cropped.append({"id": elem.id, "path": crop_path})
+        except Exception as exc:
+            return {"cropped": len(cropped), "items": cropped, "error": str(exc)}
+        context.intermediate_results['vlm_image_crops'] = cropped
+        return {"cropped": len(cropped), "items": cropped}
 
     @staticmethod
     def _extract_vlm_text_blocks(context: ProcessingContext) -> List[Dict[str, Any]]:
@@ -618,8 +704,8 @@ class Pipeline:
                 if elem.base64:
                     elem.layer_level = LayerLevel.IMAGE.value
                 else:
-                    # VLM-only mode has no SAM mask crop for icons/pictures; export a
-                    # visible placeholder box instead of silently dropping the element.
+                    # If VLM-only bbox cropping failed, export a visible placeholder
+                    # box instead of silently dropping the image-like element.
                     elem.element_type = "rectangle"
                     elem.fill_color = "none"
                     elem.stroke_color = elem.stroke_color or "#000000"
@@ -627,6 +713,9 @@ class Pipeline:
                     elem.layer_level = LayerLevel.BASIC_SHAPE.value
 
             else:
+                semantic_type = str(getattr(elem, "semantic_type", "") or "").lower()
+                if semantic_type in {"table", "chart", "diagram", "group"} and elem_type == "container":
+                    elem.reconstruction_strategy = elem.reconstruction_strategy or f"{semantic_type}_candidate"
                 if elem_type in {"rectangle", "rounded rectangle", "rounded_rectangle", "container", "cylinder"}:
                     elem.fill_color = "none"
                 else:

@@ -142,11 +142,15 @@ multimodal:
   max_tokens: 4000
   timeout: 60
   verify_ssl: true
-  # VLMClient logs full non-image request/response data; image/base64 payloads are omitted.
+  # VLMClient logs compact request metadata; image/base64 payloads are omitted.
   log_response: true
-  # Deprecated: logs are no longer truncated except image/base64 payloads.
+  # Request text logs are previews only to avoid unreadable giant OCR/prompt dumps.
+  request_text_log_chars: 1200
+  # Deprecated: response logs are summarized by parsed PPTX-relevant fields.
   response_log_chars: 0
   max_elements_for_vlm: 80
+  vlm_only_region_max_items: 20
+  vlm_only_ocr_anchor_max_blocks: 30
   # Force SAM3 back to coarse recall prompts; VLM/CV fill detailed attributes later.
   coarse_sam_prompts: true
   use_for:
@@ -164,6 +168,8 @@ multimodal:
     element_refine_confidence: 0.75
     region_refine_confidence: 0.70
     layout_refine_confidence: 0.70
+    vlm_region_confidence: 0.60
+    vlm_connector_confidence: 0.70
     text_style_confidence: 0.65
     segmentation_refine_confidence: 0.65
     element_attribute_confidence: 0.65
@@ -184,10 +190,13 @@ export:
 
 # Recognition mode:
 # - sam3_first: existing OCR -> SAM3 -> VLM repair path.
-# - vlm_only: skip SAM3 and ask the configured VLM to directly recognize an
-#   equivalent editable page structure from the image plus OCR text anchors.
+# - vlm_only: skip SAM3 and run staged VLM page-region, region-element,
+#   connector, attribute, and validation passes.
 recognition:
   mode: "sam3_first"
+  # In vlm_only mode, keep OCR text as anchors so VLM focuses on structure,
+  # grouping, semantics, and styles instead of re-reading all text itself.
+  use_ocr_anchors: true
 
 # Paths (optional)
 paths: {}

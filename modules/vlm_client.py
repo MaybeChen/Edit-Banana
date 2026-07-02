@@ -9,6 +9,7 @@ directly at the service endpoint.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import mimetypes
 from pathlib import Path
@@ -55,6 +56,7 @@ class VLMClient:
         self.proxy = self.config.get("proxy") or ""
         self.log_response = bool(self.config.get("log_response", True))
         self.response_log_chars = int(self.config.get("response_log_chars", 0) or 0)
+        self.request_text_log_chars = int(self.config.get("request_text_log_chars", 1200) or 1200)
 
     def _request_url(self) -> str:
         """Resolve the request URL from configured base_url.
@@ -106,8 +108,8 @@ class VLMClient:
                 safe[key] = self._mask_secret(safe[key])
         return safe
 
-    @staticmethod
-    def _summarize_content_part(part: Any) -> Any:
+    @classmethod
+    def _summarize_content_part(cls, part: Any, text_log_chars: int = 1200) -> Any:
         """Summarize multimodal content without dumping base64 image data."""
         if not isinstance(part, dict):
             return part
@@ -127,18 +129,27 @@ class VLMClient:
                 if len(image_url) > 80:
                     return {"type": "image_url", "image_url": "<base64 omitted>"}
         if part.get("type") == "text":
-            return part
+            text = str(part.get("text") or "")
+            limit = max(0, int(text_log_chars or 0))
+            preview = text if limit == 0 or len(text) <= limit else text[:limit]
+            return {
+                "type": "text",
+                "text_preview": preview,
+                "text_chars": len(text),
+                "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+                "truncated": bool(limit and len(text) > limit),
+            }
         return part
 
     @classmethod
-    def _summarize_messages_for_log(cls, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _summarize_messages_for_log(cls, messages: List[Dict[str, Any]], text_log_chars: int = 1200) -> List[Dict[str, Any]]:
         """Summarize messages for request logs."""
         summarized = []
         for message in messages:
             msg = dict(message)
             content = msg.get("content")
             if isinstance(content, list):
-                msg["content"] = [cls._summarize_content_part(part) for part in content]
+                msg["content"] = [cls._summarize_content_part(part, text_log_chars) for part in content]
             summarized.append(msg)
         return summarized
 
@@ -322,7 +333,7 @@ class VLMClient:
         url = self._request_url()
         headers = self._headers()
         log_payload = dict(payload)
-        log_payload["messages"] = self._summarize_messages_for_log(messages)
+        log_payload["messages"] = self._summarize_messages_for_log(messages, self.request_text_log_chars)
         print(
             "[VLMClient] request "
             + json.dumps(
